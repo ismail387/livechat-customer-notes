@@ -3,75 +3,109 @@
 <head>
   <meta charset="UTF-8">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 12px; margin: 0; background-color: #f9f9f9; }
-    h4 { margin: 0 0 10px 0; color: #2c3e50; font-size: 14px; }
-    textarea { width: 100%; height: 110px; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; resize: vertical; font-size: 13px; }
-    button { width: 100%; margin-top: 10px; padding: 10px; background-color: #4285f4; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 13px; }
-    button:hover { background-color: #357ae8; }
-    #status { margin-top: 10px; font-size: 12px; color: #555; text-align: center; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      padding: 12px;
+      margin: 0;
+      background-color: #fff;
+    }
+    h4 {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+      color: #333;
+    }
+    textarea {
+      width: 100%;
+      height: 100px;
+      padding: 8px;
+      box-sizing: border-box;
+      border: 1px solid #dcdcdc;
+      border-radius: 6px;
+      resize: vertical;
+      font-size: 13px;
+      outline: none;
+    }
+    textarea:focus {
+      border-color: #4285f4;
+    }
+    button {
+      width: 100%;
+      margin-top: 8px;
+      padding: 9px;
+      background-color: #0066ff;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:hover {
+      background-color: #0052cc;
+    }
+    #status {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #28a745;
+      text-align: center;
+      min-height: 16px;
+      font-weight: 500;
+    }
   </style>
-  <!-- Doğru UMD CDN Bağlantısı -->
   <script src="https://unpkg.com/@livechat/agent-app-sdk@2.0.0/dist/agent-app-sdk.umd.js"></script>
 </head>
 <body>
-  <h4>Müşteri Notları</h4>
-  <textarea id="noteInput" placeholder="Müşteri hakkında not yazın..."></textarea>
-  <button id="saveBtn">Kaydet</button>
+
+  <h4>Müşteri Notu</h4>
+  <textarea id="noteInput" placeholder="Bu müşteri için not yazın..."></textarea>
+  <button id="saveBtn">Notu Kaydet</button>
   <div id="status"></div>
 
   <script>
-    let widgetInstance = null;
-    let currentCustomerId = null;
+    let currentKey = null;
 
     // SDK Başlatma
     if (window.LiveChat) {
       LiveChat.createDetailsWidget().then((widget) => {
-        widgetInstance = widget;
-        showStatus('Hazır');
 
-        // Müşteri seçildiğinde mevcut notu yükle
+        // Müşteri profili değiştikçe tetiklenir
         widget.on('customer_profile', (profile) => {
           if (!profile) return;
-          currentCustomerId = profile.id;
-          
-          // Müşteriye ait not varsa getir
-          const existingNote = profile.properties?.my_notes?.note || '';
-          document.getElementById('noteInput').value = existingNote;
-          showStatus('');
+
+          // Müşteriyi e-postasına veya ID'sine göre tekilleştir
+          currentKey = 'note_' + (profile.email || profile.id);
+
+          // Hafızadaki notu çek ve kutuya yaz
+          const savedNote = localStorage.getItem(currentKey) || '';
+          document.getElementById('noteInput').value = savedNote;
+          setStatus('');
         });
+
       }).catch((err) => {
-        showStatus('SDK Bağlantı Hatası!');
+        console.error('Widget hatası:', err);
       });
     }
 
-    // Kaydet Butonu
+    // Kaydet Buton Olayı
     document.getElementById('saveBtn').addEventListener('click', () => {
-      if (!widgetInstance) {
-        showStatus('Widget başlatılamadı.');
-        return;
+      const noteText = document.getElementById('noteInput').value;
+
+      if (!currentKey) {
+        // Müşteri profili henüz yüklenmediyse sohbet URL'sinden ID almayı dene
+        currentKey = 'note_generic_' + window.location.search;
       }
 
-      const noteText = document.getElementById('noteInput').value;
-      showStatus('Kaydediliyor...');
-
-      // LiveChat Property kaydı
-      widgetInstance.putCustomerProperty({
-        namespace: 'my_notes',
-        name: 'note',
-        value: noteText
-      })
-      .then(() => {
-        showStatus('✅ Not kaydedildi!');
-      })
-      .catch((err) => {
-        console.error(err);
-        showStatus('❌ Kayıt başarısız!');
-      });
+      // LocalStorage'a yaz
+      localStorage.setItem(currentKey, noteText);
+      
+      setStatus('✅ Kaydedildi!');
+      setTimeout(() => setStatus(''), 2500);
     });
 
-    function showStatus(msg) {
+    function setStatus(msg) {
       document.getElementById('status').innerText = msg;
     }
   </script>
+
 </body>
 </html>
