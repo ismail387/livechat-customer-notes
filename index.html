@@ -12,12 +12,12 @@
     button:hover { background-color: #0052cc; }
     #status { margin-top: 8px; font-size: 12px; text-align: center; font-weight: bold; min-height: 18px; }
   </style>
-  <script src="https://unpkg.com/@livechat/agent-app-sdk@2.0.0/dist/agent-app-sdk.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@livechat/agent-app-sdk@2.0.0/dist/agent-app-sdk.umd.js"></script>
 </head>
 <body>
 
   <h4>Müşteri Notu</h4>
-  <span id="customerTag">Müşteri yükleniyor...</span>
+  <span id="customerTag">Müşteri bekleniyor...</span>
   <textarea id="noteInput" placeholder="Bu müşteri için not yazın..."></textarea>
   <button id="saveBtn">Notu Kaydet</button>
   <div id="status"></div>
@@ -25,50 +25,46 @@
   <script>
     let currentKey = null;
 
-    function setKeyAndLoad(identifier) {
-      if (!identifier || currentKey === 'lc_note_v4_' + identifier) return;
-      currentKey = 'lc_note_v4_' + identifier;
-      document.getElementById('customerTag').innerText = '👤 ' + identifier;
+    function setCustomer(id) {
+      if (!id) return;
+      currentKey = 'lc_note_v5_' + id;
+      document.getElementById('customerTag').innerText = '👤 ' + id;
       
-      // Müşteriye özel kayıtlı notu yükle
       const saved = localStorage.getItem(currentKey) || '';
       document.getElementById('noteInput').value = saved;
       setStatus('Hazır', '#28a745');
     }
 
-    // 1. SDK Yöntemi (Canlı Sohbetler İçin)
-    if (window.LiveChat) {
-      LiveChat.createDetailsWidget().then((widget) => {
-        const handleData = (data) => {
-          if (!data) return;
-          const id = data.email || data.id || (data.customer && (data.customer.email || data.customer.id));
-          if (id) setKeyAndLoad(id);
-        };
-
-        widget.on('customer_profile', handleData);
-        widget.on('customer_details', handleData);
-        widget.on('chat_details', handleData);
-      }).catch(() => {});
-    }
-
-    // 2. Fallback Yöntemi (Arşiv Sohbetleri İçin URL & Referrer Takibi)
-    setInterval(() => {
+    // LiveChat postMessage Mesaj Dinleyicisi (Sohbet Değişimini Yakalar)
+    window.addEventListener('message', function(event) {
       try {
-        // İframe URL parametrelerinden veya Referrer (üst sayfa) adresinden Sohbet/Müşteri ID'sini yakala
-        const urlParams = new URLSearchParams(window.location.search);
-        let id = urlParams.get('chat_id') || urlParams.get('customer_id');
-
-        if (!id && document.referrer) {
-          const refUrl = new URL(document.referrer);
-          const parts = refUrl.pathname.split('/');
-          id = parts[parts.length - 1]; // Örn: TK04QS5J9X
-        }
-
-        if (id && id !== 'new') {
-          setKeyAndLoad(id);
+        const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (data && data.payload) {
+          const payload = data.payload;
+          const customerId = payload.customer_id || payload.chat_id || (payload.customer && payload.customer.id) || (payload.customer && payload.customer.email);
+          if (customerId) {
+            setCustomer(customerId);
+          }
         }
       } catch (e) {}
-    }, 800);
+    });
+
+    // SDK Başlatıcı
+    if (window.LiveChat) {
+      LiveChat.createDetailsWidget().then((widget) => {
+        setStatus('Sistem Aktif', '#28a745');
+
+        const updateFn = (data) => {
+          if (!data) return;
+          const id = data.email || data.id || (data.customer && (data.customer.email || data.customer.id));
+          if (id) setCustomer(id);
+        };
+
+        widget.on('customer_profile', updateFn);
+        widget.on('customer_details', updateFn);
+        widget.on('chat_details', updateFn);
+      }).catch(() => {});
+    }
 
     // Kaydet Butonu
     document.getElementById('saveBtn').addEventListener('click', () => {
