@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <script src="https://unpkg.com/@livechat/developer-sdk@2.0.0/dist/developer-sdk.min.js"></script>
+</head>
+<body>
+  <h3>Müşteri Notları</h3>
+  <textarea id="noteInput" placeholder="Notunuzu buraya yazın..."></textarea>
+  <button id="saveBtn">Kaydet</button>
+
+  <script>
+    // LiveChat Widget SDK Başlatma
+    const widget = LiveChat.init();
+    let currentCustomerId = null;
+
+    // Müşteri seçildiğinde mevcut notu yükle
+    widget.on('customer_profile', (profile) => {
+      currentCustomerId = profile.id;
+      // LiveChat'te saklanan notu getir
+      const existingNote = profile.properties?.my_brand_notes?.note || '';
+      document.getElementById('noteInput').value = existingNote;
+    });
+
+    // Kaydet butonuna basılınca
+    document.getElementById('saveBtn').addEventListener('click', () => {
+      const noteText = document.getElementById('noteInput').value;
+      
+      // Notu LiveChat Customer Property olarak kaydet
+      widget.putCustomerProperty({
+        namespace: 'my_brand_notes',
+        name: 'note',
+        value: noteText
+      }).then(() => alert('Not kaydedildi!'));
+    });
+  </script>
+</body>
+</html>
