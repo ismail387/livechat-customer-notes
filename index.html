@@ -1,37 +1,72 @@
 <!DOCTYPE html>
-<html>
+<html lang="tr">
 <head>
-  <script src="https://unpkg.com/@livechat/developer-sdk@2.0.0/dist/developer-sdk.min.js"></script>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 10px; margin: 0; }
+    h4 { margin: 0 0 10px 0; color: #333; }
+    textarea { width: 100%; height: 100px; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; resize: vertical; }
+    button { width: 100%; margin-top: 8px; padding: 10px; background-color: #4285f4; color: white; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; }
+    button:hover { background-color: #357ae8; }
+    #status { margin-top: 8px; font-size: 12px; color: #666; }
+  </style>
+  <script src="https://unpkg.com/@livechat/agent-app-sdk@latest/dist/agent-app-sdk.min.js"></script>
 </head>
 <body>
-  <h3>Müşteri Notları</h3>
-  <textarea id="noteInput" placeholder="Notunuzu buraya yazın..."></textarea>
+  <h4>Müşteri Notları</h4>
+  <textarea id="noteInput" placeholder="Müşteri hakkında not yazın..."></textarea>
   <button id="saveBtn">Kaydet</button>
+  <div id="status"></div>
 
   <script>
-    // LiveChat Widget SDK Başlatma
-    const widget = LiveChat.init();
+    let widget = null;
     let currentCustomerId = null;
 
-    // Müşteri seçildiğinde mevcut notu yükle
-    widget.on('customer_profile', (profile) => {
-      currentCustomerId = profile.id;
-      // LiveChat'te saklanan notu getir
-      const existingNote = profile.properties?.my_brand_notes?.note || '';
-      document.getElementById('noteInput').value = existingNote;
+    // SDK Başlatma
+    createDetailsWidget().then((instance) => {
+      widget = instance;
+
+      // Müşteri profil değişimi dinleyici
+      widget.on('customer_profile', (profile) => {
+        if (!profile) return;
+        currentCustomerId = profile.id;
+        
+        // Varsa eski notu yükle
+        const existingNote = profile.properties?.my_notes?.note || '';
+        document.getElementById('noteInput').value = existingNote;
+        showStatus('');
+      });
     });
 
-    // Kaydet butonuna basılınca
+    // Kaydet Butonu
     document.getElementById('saveBtn').addEventListener('click', () => {
+      if (!widget || !currentCustomerId) {
+        showStatus('Müşteri bilgisi alınamadı!');
+        return;
+      }
+
       const noteText = document.getElementById('noteInput').value;
-      
-      // Notu LiveChat Customer Property olarak kaydet
+      showStatus('Kaydediliyor...');
+
+      // Customer Property olarak kaydet
       widget.putCustomerProperty({
-        namespace: 'my_brand_notes',
+        id: currentCustomerId,
+        namespace: 'my_notes',
         name: 'note',
         value: noteText
-      }).then(() => alert('Not kaydedildi!'));
+      })
+      .then(() => {
+        showStatus('✅ Not başarıyla kaydedildi!');
+      })
+      .catch((err) => {
+        console.error(err);
+        showStatus('❌ Kayıt başarısız: ' + (err.message || 'Yetki hatası'));
+      });
     });
+
+    function showStatus(msg) {
+      document.getElementById('status').innerText = msg;
+    }
   </script>
 </body>
 </html>
