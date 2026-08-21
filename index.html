@@ -98,9 +98,10 @@ var CFG = {
   PROPERTY:  'chat_note',          // Console'da kaydettiğin property adı
   TAG:       'not',                // Not kaydedilince atanacak etiket ('' = kapalı)
   API:       'https://api.livechatinc.com/v3.6',
+  REDIRECT:  '',                   // boş = otomatik (sayfanın query'siz adresi). Gerekirse elle yaz.
   REGION:    '',                   // gerekirse 'dal' / 'fra' (bkz. rehber > Sorun giderme)
   MAX_NOTE:  2000,                 // tek notta izin verilen karakter
-  HISTORY:   true                  // müşterinin diğer sohbetlerindeki notları da göster
+  HISTORY:   false                 // true: AYNI müşterinin diğer sohbetlerindeki notları da göster
 
 };
 
@@ -110,7 +111,7 @@ var TOKEN_KEY = 'lcnotes.token.' + CFG.CLIENT_ID;
 
 var token = null;
 var me = null;              // notu yazan agent etiketi
-var ctx = null;             // { chatId, threadId, email }
+var ctx = null;             // { chatId, threadId, email, custId }
 var notes = [];             // [{ t: ms, a: 'agent', x: 'metin' }]
 var pastNotes = [];           // diğer sohbetlerdeki notlar (salt okunur)
 var editing = -1;           // düzenlenen notun index'i, -1 = yeni not
@@ -157,9 +158,17 @@ function storeToken(data) {
   safeSet(TOKEN_KEY, JSON.stringify({ token: token, exp: Date.now() + ttl }));
   return token;
 }
+// LiveChat, widget iframe'ini query parametreleriyle açar. AccountsSDK varsayılan olarak
+// redirect_uri = window.location.href kullanır; içinde '?' olan bir redirect_uri LiveChat
+// tarafından reddedilir (accounts.livechat.com/ooops). Bu yüzden query'siz adresi veriyoruz.
+function redirectUri() {
+  if (CFG.REDIRECT) return CFG.REDIRECT;
+  return window.location.origin + window.location.pathname;
+}
 function accounts() {
   return new AccountsSDK({
     client_id: CFG.CLIENT_ID,
+    redirect_uri: redirectUri(),
     response_type: 'token',
     // widget bir iframe içinde çalıştığı için çerez yerine localStorage:
     transaction: { force_local_storage: true }
@@ -178,16 +187,34 @@ function authPopup() {
   return accounts().popup().authorize()
     .then(function (d) { return (d && d.access_token) ? storeToken(d) : null; });
 }
+// Agent kimliği. /v2/info yalnızca account_id (UUID) döndürebilir; UUID'yi asla etiket
+// olarak göstermiyoruz. Gerçek isim için list_agents deneniyor: 'agents--all:ro' scope'u
+// verilmişse isim gelir, verilmemişse sessizce 'Agent' yazar.
+function looksLikeEmail(v) { return typeof v === 'string' && v.indexOf('@') > -1; }
+
 function whoAmI() {
   if (me !== null) return Promise.resolve(me);
+  me = '';
   return fetch('https://accounts.livechat.com/v2/info', {
     headers: { Authorization: 'Bearer ' + token }
   }).then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (j) {
-      me = (j && (j.entity_id || j.email || j.account_id)) || '';
-      return me;
+    .then(function (info) {
+      if (looksLikeEmail(info && info.entity_id)) { me = info.entity_id; return me; }
+      if (looksLikeEmail(info && info.email)) { me = info.email; return me; }
+      var accId = info && info.account_id;
+      if (!accId) return me;
+      return api('list_agents', {}, 'configuration').then(function (res) {
+        var list = Array.isArray(res) ? res : ((res && res.agents) || []);
+        for (var i = 0; i < list.length; i++) {
+          if (list[i] && list[i].account_id === accId) {
+            me = list[i].name || list[i].id || '';
+            break;
+          }
+        }
+        return me;
+      }).catch(function () { return me; });
     })
-    .catch(function () { me = ''; return me; });
+    .catch(function () { return me; });
 }
 
 /* ---------- API ---------- */
@@ -220,12 +247,15 @@ function parseNotes(holder) {
   return [];
 }
 
-function loadChat(chatId, threadHint, email) {
+function loadChat(chatId, threadHint, email, custId) {
   var payload = { chat_id: chatId };
   if (threadHint) payload.thread_id = threadHint;
   return api('get_chat', payload).then(function (chat) {
     var thread = chat.thread || {};
-    ctx = { chatId: chat.id || chatId, threadId: thread.id || threadHint, email: email || '' };
+    ctx = {
+      chatId: chat.id || chatId, threadId: thread.id || threadHint,
+      email: email || '', custId: custId || ''
+    };
     // Notlar sohbet (chat) seviyesinde tutulur -> müşteri tekrar geldiğinde de görünür.
     notes = parseNotes(chat);
     // Eski sürümde thread'e yazılmış notlar varsa onları da al (ilk kayıtta chat'e taşınır).
@@ -234,16 +264,34 @@ function loadChat(chatId, threadHint, email) {
   });
 }
 
-// Müşterinin (aynı e-posta) diğer sohbetlerindeki notlar — salt okunur.
+// Bir arşiv kaydının GERÇEKTEN aynı müşteriye ait olduğunu doğrula.
+// (list_archives'ın customer_email filtresine güvenmiyoruz; sunucu yok sayarsa
+// başka müşterilerin notları görünürdü.)
+function sameCustomer(chat) {
+  var users = (chat && chat.users) || [];
+  for (var i = 0; i < users.length; i++) {
+    var u = users[i];
+    if (!u || u.type !== 'customer') continue;
+    if (ctx.custId && u.id === ctx.custId) return true;
+    if (ctx.email && u.email && String(u.email).toLowerCase() === String(ctx.email).toLowerCase()) return true;
+  }
+  return false;
+}
+
+// AYNI müşterinin diğer sohbetlerindeki notlar — salt okunur. CFG.HISTORY ile açılır.
 function loadHistory() {
   pastNotes = [];
-  if (!CFG.HISTORY || !ctx.email) return Promise.resolve();
+  if (!CFG.HISTORY || (!ctx.email && !ctx.custId)) return Promise.resolve();
+  var filters = {};
+  if (ctx.custId) filters.customer_id = ctx.custId;
+  else filters.customer_email = ctx.email;
   return api('list_archives', {
-    filters: { customer_email: ctx.email }, limit: 25, sort_order: 'desc'
+    filters: filters, limit: 25, sort_order: 'desc'
   }).then(function (res) {
     var seen = {};
     (res.chats || []).forEach(function (c) {
       if (!c || !c.id || c.id === ctx.chatId || seen[c.id]) return;
+      if (!sameCustomer(c)) return;   // <-- yanlış müşterinin notu asla gelmez
       seen[c.id] = 1;
       var found = parseNotes(c);
       if (!found.length && c.thread) found = parseNotes(c.thread);
@@ -320,7 +368,7 @@ function render() {
     h.className = 'hist';
     var title = document.createElement('div');
     title.className = 'hist-title small muted';
-    title.textContent = 'Diğer sohbetlerdeki notlar (' + pastNotes.length + ')';
+    title.textContent = 'Aynı müşterinin diğer sohbetleri (' + pastNotes.length + ')';
     h.appendChild(title);
     pastNotes.forEach(function (item) {
       var c = document.createElement('div');
@@ -410,7 +458,9 @@ function openProfile(profile) {
 
   setState('Notlar yükleniyor…');
   whoAmI()
-    .then(function () { return loadChat(chatId, threadHint, profile && profile.email); })
+    .then(function () {
+      return loadChat(chatId, threadHint, profile && profile.email, profile && profile.id);
+    })
     .then(function () { editing = -1; $('input').value = ''; show('main'); banner(''); render(); })
     .then(function () { return loadHistory().then(render); })
     .catch(function (err) {
@@ -420,6 +470,12 @@ function openProfile(profile) {
 }
 
 function boot() {
+  // Popup akışında bu sayfa token'la birlikte kısa süre popup içinde açılır;
+  // orada arayüz kurmaya çalışmayalım, ana pencere token'ı alıp popup'ı kapatacak.
+  if (window.opener && window.location.hash.indexOf('access_token') > -1) {
+    setState('Bağlantı tamamlandı, bu pencere kapanacak…');
+    return;
+  }
   if (!window.LiveChat || !window.LiveChat.createDetailsWidget) {
     setState('Bu sayfa LiveChat Agent App içinde çalışacak şekilde tasarlandı.', true);
     return;
