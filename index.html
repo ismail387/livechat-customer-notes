@@ -17,67 +17,71 @@
 <body>
 
   <h4>Müşteri Notu</h4>
-  <span id="customerTag">Müşteri aranıyor...</span>
+  <span id="customerTag">Müşteri yükleniyor...</span>
   <textarea id="noteInput" placeholder="Bu müşteri için not yazın..."></textarea>
   <button id="saveBtn">Notu Kaydet</button>
   <div id="status"></div>
 
   <script>
-    let currentCustomerKey = null;
+    let currentKey = null;
 
-    function setCustomer(identifier) {
-      if (!identifier) return;
-      currentCustomerKey = 'lc_note_v3_' + identifier;
+    function setKeyAndLoad(identifier) {
+      if (!identifier || currentKey === 'lc_note_v4_' + identifier) return;
+      currentKey = 'lc_note_v4_' + identifier;
       document.getElementById('customerTag').innerText = '👤 ' + identifier;
       
-      // Kayıtlı notu yükle
-      const saved = localStorage.getItem(currentCustomerKey) || '';
+      // Müşteriye özel kayıtlı notu yükle
+      const saved = localStorage.getItem(currentKey) || '';
       document.getElementById('noteInput').value = saved;
+      setStatus('Hazır', '#28a745');
     }
 
-    // SDK Başlatma ve Dinleyiciler
+    // 1. SDK Yöntemi (Canlı Sohbetler İçin)
     if (window.LiveChat) {
       LiveChat.createDetailsWidget().then((widget) => {
-        setStatus('Sistem Aktif', '#28a745');
+        const handleData = (data) => {
+          if (!data) return;
+          const id = data.email || data.id || (data.customer && (data.customer.email || data.customer.id));
+          if (id) setKeyAndLoad(id);
+        };
 
-        // 1. Canlı Müşteri Profili Değişimi
-        widget.on('customer_profile', (data) => {
-          if (data && (data.email || data.id)) {
-            setCustomer(data.email || data.id);
-          }
-        });
-
-        // 2. Geçmiş/Arşiv Sohbet Değişimi
-        widget.on('customer_details', (data) => {
-          if (data && (data.email || data.id)) {
-            setCustomer(data.email || data.id);
-          }
-        });
-
-        // 3. Genel Sohbet Detayı Değişimi
-        widget.on('chat_details', (data) => {
-          if (data && data.customer) {
-            setCustomer(data.customer.email || data.customer.id);
-          }
-        });
-
-      }).catch(() => {
-        setStatus('SDK Bağlantı Hatası', '#dc3545');
-      });
+        widget.on('customer_profile', handleData);
+        widget.on('customer_details', handleData);
+        widget.on('chat_details', handleData);
+      }).catch(() => {});
     }
+
+    // 2. Fallback Yöntemi (Arşiv Sohbetleri İçin URL & Referrer Takibi)
+    setInterval(() => {
+      try {
+        // İframe URL parametrelerinden veya Referrer (üst sayfa) adresinden Sohbet/Müşteri ID'sini yakala
+        const urlParams = new URLSearchParams(window.location.search);
+        let id = urlParams.get('chat_id') || urlParams.get('customer_id');
+
+        if (!id && document.referrer) {
+          const refUrl = new URL(document.referrer);
+          const parts = refUrl.pathname.split('/');
+          id = parts[parts.length - 1]; // Örn: TK04QS5J9X
+        }
+
+        if (id && id !== 'new') {
+          setKeyAndLoad(id);
+        }
+      } catch (e) {}
+    }, 800);
 
     // Kaydet Butonu
     document.getElementById('saveBtn').addEventListener('click', () => {
       const text = document.getElementById('noteInput').value;
 
-      if (!currentCustomerKey) {
-        setStatus('❌ Müşteri tespit edilemedi!', '#dc3545');
+      if (!currentKey) {
+        setStatus('❌ Müşteri seçili değil!', '#dc3545');
         return;
       }
 
-      localStorage.setItem(currentCustomerKey, text);
+      localStorage.setItem(currentKey, text);
       setStatus('✅ Not Kaydedildi!', '#28a745');
-      setTimeout(() => setStatus('Sistem Aktif', '#28a745'), 2000);
+      setTimeout(() => setStatus('Hazır', '#28a745'), 2000);
     });
 
     function setStatus(msg, color) {
