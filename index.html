@@ -94,10 +94,15 @@
  *  AYARLAR — sadece CLIENT_ID zorunlu.
  * ------------------------------------------------------------------ */
 var CFG = {
-  CLIENT_ID: 'e60b10aab9458201f43cada83909f79b',   // Developer Console > uygulaman > Client ID
+  CLIENT_ID: 'BURAYA_CLIENT_ID',   // Developer Console > uygulaman > Client ID
   PROPERTY:  'chat_note',          // Console'da kaydettiğin property adı
   TAG:       'not',                // Not kaydedilince atanacak etiket ('' = kapalı)
   API:       'https://api.livechatinc.com/v3.6',
+  // Yetkilendirmede İSTENEN scope'lar. Console'daki listenin alt kümesi olmalı.
+  // Normal agent rolüne verilebilen 'access' varyantlarını istiyoruz; 'chats--all:*'
+  // yalnızca yöneticilere verilebildiği için istenirse normal agent 'invalid_scope' alır.
+  // '' yaparsan Console'daki bütün scope'lar istenir (sadece admin hesaplarda çalışır).
+  SCOPES:    'chats--access:ro,chats--access:rw,agents--all:ro',
   REDIRECT:  '',                   // boş = otomatik (sayfanın query'siz adresi). Gerekirse elle yaz.
   REGION:    '',                   // gerekirse 'dal' / 'fra' (bkz. rehber > Sorun giderme)
   MAX_NOTE:  2000,                 // tek notta izin verilen karakter
@@ -166,13 +171,15 @@ function redirectUri() {
   return window.location.origin + window.location.pathname;
 }
 function accounts() {
-  return new AccountsSDK({
+  var opts = {
     client_id: CFG.CLIENT_ID,
     redirect_uri: redirectUri(),
     response_type: 'token',
     // widget bir iframe içinde çalıştığı için çerez yerine localStorage:
     transaction: { force_local_storage: true }
-  });
+  };
+  if (CFG.SCOPES) opts.scope = CFG.SCOPES;
+  return new AccountsSDK(opts);
 }
 // Sessiz (iframe) deneme — başarısız olursa null döner, kullanıcıya buton gösterilir.
 function authSilent() {
@@ -480,7 +487,7 @@ function boot() {
     setState('Bu sayfa LiveChat Agent App içinde çalışacak şekilde tasarlandı.', true);
     return;
   }
-  if (CFG.CLIENT_ID === 'BURAYA_CLIENT_ID') {
+  if (CFG.CLIENT_ID === 'e60b10aab9458201f43cada83909f79b') {
     setState('Kurulum eksik: index.html içindeki CLIENT_ID alanını doldur.', true);
     return;
   }
