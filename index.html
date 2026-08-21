@@ -1,91 +1,472 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="tr">
 <head>
-  <meta charset="UTF-8">
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 12px; margin: 0; background: #fff; }
-    h4 { margin: 0 0 4px 0; font-size: 13px; color: #333; }
-    #customerTag { font-size: 11px; color: #0066ff; font-weight: bold; margin-bottom: 8px; display: block; word-break: break-all; }
-    textarea { width: 100%; height: 110px; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; resize: vertical; font-size: 13px; outline: none; }
-    textarea:focus { border-color: #0066ff; }
-    button { width: 100%; margin-top: 8px; padding: 10px; background-color: #0066ff; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 13px; }
-    button:hover { background-color: #0052cc; }
-    #status { margin-top: 8px; font-size: 12px; text-align: center; font-weight: bold; min-height: 18px; }
-  </style>
-  <script src="https://cdn.jsdelivr.net/npm/@livechat/agent-app-sdk@2.0.0/dist/agent-app-sdk.umd.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notlar</title>
+<style>
+  :root{
+    --bg:#fff; --fg:#22262b; --muted:#767d85; --line:#e0e2e6;
+    --card:#f7f8f9; --accent:#4384f5; --accent-fg:#fff; --danger:#d84f4f;
+    --radius:8px;
+  }
+  html[data-theme="dark"]{
+    --bg:#22262b; --fg:#eceff1; --muted:#9aa2ab; --line:#3a4048;
+    --card:#2b3037; --accent:#5b95f7; --accent-fg:#fff; --danger:#e57373;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%}
+  body{
+    background:var(--bg); color:var(--fg);
+    font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  #app{padding:12px}
+  .muted{color:var(--muted)}
+  .small{font-size:11px}
+  .state{padding:16px 4px; color:var(--muted); text-align:center}
+  .state.err{color:var(--danger); text-align:left}
+  .notes{display:flex; flex-direction:column; gap:8px; margin-bottom:12px}
+  .note{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:8px 10px}
+  .note .meta{display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:4px}
+  .note .who{font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .note .txt{white-space:pre-wrap; word-break:break-word}
+  .note .acts{display:flex; gap:2px; flex:0 0 auto}
+  .iconbtn{
+    background:none; border:0; color:var(--muted); cursor:pointer; padding:2px 4px;
+    font-size:11px; border-radius:4px;
+  }
+  .iconbtn:hover{background:var(--line); color:var(--fg)}
+  .iconbtn.danger:hover{background:var(--danger); color:#fff}
+  textarea{
+    width:100%; min-height:64px; resize:vertical; padding:8px 10px; color:var(--fg);
+    background:var(--bg); border:1px solid var(--line); border-radius:var(--radius);
+    font:inherit; outline:none;
+  }
+  textarea:focus{border-color:var(--accent)}
+  .row{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px}
+  .btn{
+    background:var(--accent); color:var(--accent-fg); border:0; border-radius:var(--radius);
+    padding:7px 14px; font:inherit; font-weight:600; cursor:pointer;
+  }
+  .btn:disabled{opacity:.5; cursor:default}
+  .btn.ghost{background:none; color:var(--muted); font-weight:400; padding:7px 8px}
+  .btn.ghost:hover{color:var(--fg)}
+  .empty{padding:10px 2px; color:var(--muted)}
+  .banner{
+    background:var(--card); border:1px solid var(--line); border-left:3px solid var(--danger);
+    border-radius:var(--radius); padding:8px 10px; margin-bottom:10px; font-size:12px;
+  }
+  .center{text-align:center; padding:20px 8px}
+  .hist{margin-top:6px; padding-top:10px; border-top:1px dashed var(--line);
+        display:flex; flex-direction:column; gap:6px}
+  .hist-title{margin-bottom:2px}
+  .note.old{background:none; border-style:dashed; opacity:.85}
+</style>
 </head>
 <body>
+<div id="app">
+  <div id="state" class="state">Yükleniyor…</div>
 
-  <h4>Müşteri Notu</h4>
-  <span id="customerTag">Müşteri bekleniyor...</span>
-  <textarea id="noteInput" placeholder="Bu müşteri için not yazın..."></textarea>
-  <button id="saveBtn">Notu Kaydet</button>
-  <div id="status"></div>
+  <div id="auth" class="center" hidden>
+    <p class="muted">Notları görmek için LiveChat hesabınla bağlan.</p>
+    <button id="connect" class="btn">Bağlan</button>
+  </div>
 
-  <script>
-    let currentKey = null;
+  <div id="main" hidden>
+    <div id="banner" class="banner" hidden></div>
+    <div id="notes" class="notes"></div>
+    <textarea id="input" placeholder="Bu sohbet hakkında not…" maxlength="2000"></textarea>
+    <div class="row">
+      <span id="counter" class="muted small"></span>
+      <span>
+        <button id="cancel" class="btn ghost" hidden>Vazgeç</button>
+        <button id="save" class="btn">Ekle</button>
+      </span>
+    </div>
+  </div>
+</div>
 
-    function setCustomer(id) {
-      if (!id) return;
-      currentKey = 'lc_note_v5_' + id;
-      document.getElementById('customerTag').innerText = '👤 ' + id;
-      
-      const saved = localStorage.getItem(currentKey) || '';
-      document.getElementById('noteInput').value = saved;
-      setStatus('Hazır', '#28a745');
+<script src="https://unpkg.com/@livechat/agent-app-sdk@1.16.0/dist/agentapp.umd.min.js"></script>
+<script src="https://unpkg.com/@livechat/accounts-sdk@3.0.2/dist/accounts-sdk.min.js"></script>
+<script>
+/* ------------------------------------------------------------------ *
+ *  AYARLAR — sadece CLIENT_ID zorunlu.
+ * ------------------------------------------------------------------ */
+var CFG = {
+  CLIENT_ID: 'e0760eba5f3072c8957fa13a5a24a876',   // Developer Console > uygulaman > Client ID
+  PROPERTY:  'chat_note',          // Console'da kaydettiğin property adı
+  TAG:       'not',                // Not kaydedilince atanacak etiket ('' = kapalı)
+  API:       'https://api.livechatinc.com/v3.6',
+  REGION:    '',                   // gerekirse 'dal' / 'fra' (bkz. rehber > Sorun giderme)
+  MAX_NOTE:  2000,                 // tek notta izin verilen karakter
+  HISTORY:   true                  // müşterinin diğer sohbetlerindeki notları da göster
+
+};
+
+/* ------------------------------------------------------------------ */
+var $ = function (id) { return document.getElementById(id); };
+var TOKEN_KEY = 'lcnotes.token.' + CFG.CLIENT_ID;
+
+var token = null;
+var me = null;              // notu yazan agent etiketi
+var ctx = null;             // { chatId, threadId, email }
+var notes = [];             // [{ t: ms, a: 'agent', x: 'metin' }]
+var pastNotes = [];           // diğer sohbetlerdeki notlar (salt okunur)
+var editing = -1;           // düzenlenen notun index'i, -1 = yeni not
+var busy = false;
+
+/* ---------- yardımcılar ---------- */
+function show(which) {
+  ['state', 'auth', 'main'].forEach(function (id) { $(id).hidden = (id !== which); });
+}
+function setState(msg, isError) {
+  $('state').textContent = msg;
+  $('state').className = 'state' + (isError ? ' err' : '');
+  show('state');
+}
+function banner(msg) {
+  var b = $('banner');
+  if (!msg) { b.hidden = true; b.textContent = ''; return; }
+  b.textContent = msg; b.hidden = false;
+}
+function fmt(ts) {
+  try {
+    return new Date(ts).toLocaleString('tr-TR',
+      { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+  } catch (e) { return ''; }
+}
+function safeGet(k) { try { return window.sessionStorage.getItem(k); } catch (e) { return null; } }
+function safeSet(k, v) { try { window.sessionStorage.setItem(k, v); } catch (e) {} }
+function safeDel(k) { try { window.sessionStorage.removeItem(k); } catch (e) {} }
+
+/* ---------- yetkilendirme ---------- */
+function cachedToken() {
+  var raw = safeGet(TOKEN_KEY);
+  if (!raw) return null;
+  try {
+    var o = JSON.parse(raw);
+    if (o && o.token && o.exp > Date.now() + 30000) return o.token;
+  } catch (e) {}
+  safeDel(TOKEN_KEY);
+  return null;
+}
+function storeToken(data) {
+  token = data.access_token;
+  var ttl = (parseInt(data.expires_in, 10) || 3600) * 1000;
+  safeSet(TOKEN_KEY, JSON.stringify({ token: token, exp: Date.now() + ttl }));
+  return token;
+}
+function accounts() {
+  return new AccountsSDK({
+    client_id: CFG.CLIENT_ID,
+    response_type: 'token',
+    // widget bir iframe içinde çalıştığı için çerez yerine localStorage:
+    transaction: { force_local_storage: true }
+  });
+}
+// Sessiz (iframe) deneme — başarısız olursa null döner, kullanıcıya buton gösterilir.
+function authSilent() {
+  var c = cachedToken();
+  if (c) { token = c; return Promise.resolve(token); }
+  return accounts().iframe().authorize()
+    .then(function (d) { return (d && d.access_token) ? storeToken(d) : null; })
+    .catch(function () { return null; });
+}
+// Kullanıcı tıklamasıyla popup — tarayıcı popup'ı engellemesin diye click içinde çağrılmalı.
+function authPopup() {
+  return accounts().popup().authorize()
+    .then(function (d) { return (d && d.access_token) ? storeToken(d) : null; });
+}
+function whoAmI() {
+  if (me !== null) return Promise.resolve(me);
+  return fetch('https://accounts.livechat.com/v2/info', {
+    headers: { Authorization: 'Bearer ' + token }
+  }).then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) {
+      me = (j && (j.entity_id || j.email || j.account_id)) || '';
+      return me;
+    })
+    .catch(function () { me = ''; return me; });
+}
+
+/* ---------- API ---------- */
+function api(action, payload, group) {
+  var headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token };
+  if (CFG.REGION) headers['X-Region'] = CFG.REGION;
+  return fetch(CFG.API + '/' + (group || 'agent') + '/action/' + action, {
+    method: 'POST', headers: headers, body: JSON.stringify(payload || {})
+  }).then(function (r) {
+    if (r.status === 401) { token = null; safeDel(TOKEN_KEY); var e = new Error('unauthorized'); e.auth = true; throw e; }
+    return r.json().catch(function () { return {}; }).then(function (j) {
+      if (!r.ok) throw new Error((j && j.error && (j.error.message || j.error.type)) || ('HTTP ' + r.status));
+      return j;
+    });
+  });
+}
+
+/* ---------- notlar ---------- */
+function parseNotes(holder) {
+  var bag = holder && holder.properties && holder.properties[CFG.CLIENT_ID];
+  var raw = bag && bag[CFG.PROPERTY];
+  if (!raw) return [];
+  try {
+    var v = JSON.parse(raw);
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'string' && v) return [{ t: 0, a: '', x: v }];   // eski tek-metin formatı
+  } catch (e) {
+    return [{ t: 0, a: '', x: String(raw) }];                        // düz metin de kaybolmasın
+  }
+  return [];
+}
+
+function loadChat(chatId, threadHint, email) {
+  var payload = { chat_id: chatId };
+  if (threadHint) payload.thread_id = threadHint;
+  return api('get_chat', payload).then(function (chat) {
+    var thread = chat.thread || {};
+    ctx = { chatId: chat.id || chatId, threadId: thread.id || threadHint, email: email || '' };
+    // Notlar sohbet (chat) seviyesinde tutulur -> müşteri tekrar geldiğinde de görünür.
+    notes = parseNotes(chat);
+    // Eski sürümde thread'e yazılmış notlar varsa onları da al (ilk kayıtta chat'e taşınır).
+    if (!notes.length) notes = parseNotes(thread);
+    if (!ctx.threadId) throw new Error('Bu sohbette kayıt yapılabilir bir thread bulunamadı.');
+  });
+}
+
+// Müşterinin (aynı e-posta) diğer sohbetlerindeki notlar — salt okunur.
+function loadHistory() {
+  pastNotes = [];
+  if (!CFG.HISTORY || !ctx.email) return Promise.resolve();
+  return api('list_archives', {
+    filters: { customer_email: ctx.email }, limit: 25, sort_order: 'desc'
+  }).then(function (res) {
+    var seen = {};
+    (res.chats || []).forEach(function (c) {
+      if (!c || !c.id || c.id === ctx.chatId || seen[c.id]) return;
+      seen[c.id] = 1;
+      var found = parseNotes(c);
+      if (!found.length && c.thread) found = parseNotes(c.thread);
+      found.forEach(function (n) { pastNotes.push({ chat: c.id, n: n }); });
+    });
+    pastNotes.sort(function (a, b) { return (b.n.t || 0) - (a.n.t || 0); });
+  }).catch(function () { pastNotes = []; });
+}
+
+function persist() {
+  var props = {};
+  props[CFG.CLIENT_ID] = {};
+  props[CFG.CLIENT_ID][CFG.PROPERTY] = JSON.stringify(notes);
+  return api('update_chat_properties', {
+    id: ctx.chatId, properties: props
+  }).then(function () {
+    if (!CFG.TAG) return;
+    var action = notes.length ? 'tag_thread' : 'untag_thread';
+    return api(action, { chat_id: ctx.chatId, thread_id: ctx.threadId, tag: CFG.TAG })
+      .catch(function () { /* etiket başarısız olsa da not kaydedildi */ });
+  });
+}
+
+/* ---------- arayüz ---------- */
+function render() {
+  var box = $('notes');
+  box.textContent = '';
+  if (!notes.length) {
+    var e = document.createElement('div');
+    e.className = 'empty small';
+    e.textContent = 'Bu sohbet için henüz not yok.';
+    box.appendChild(e);
+  }
+  notes.forEach(function (n, i) {
+    var card = document.createElement('div');
+    card.className = 'note';
+
+    var meta = document.createElement('div');
+    meta.className = 'meta';
+
+    var who = document.createElement('span');
+    who.className = 'who';
+    who.textContent = [n.a || 'Agent', n.t ? fmt(n.t) : ''].filter(Boolean).join(' · ');
+    meta.appendChild(who);
+
+    var acts = document.createElement('span');
+    acts.className = 'acts';
+
+    var edit = document.createElement('button');
+    edit.className = 'iconbtn'; edit.type = 'button';
+    edit.textContent = 'Düzenle'; edit.title = 'Notu düzenle';
+    edit.onclick = function () { startEdit(i); };
+    acts.appendChild(edit);
+
+    var del = document.createElement('button');
+    del.className = 'iconbtn danger'; del.type = 'button';
+    del.textContent = 'Sil'; del.title = 'Notu sil';
+    del.onclick = function () { removeNote(i); };
+    acts.appendChild(del);
+
+    meta.appendChild(acts);
+    card.appendChild(meta);
+
+    var txt = document.createElement('div');
+    txt.className = 'txt';
+    txt.textContent = n.x || '';
+    card.appendChild(txt);
+
+    box.appendChild(card);
+  });
+
+  if (pastNotes.length) {
+    var h = document.createElement('div');
+    h.className = 'hist';
+    var title = document.createElement('div');
+    title.className = 'hist-title small muted';
+    title.textContent = 'Diğer sohbetlerdeki notlar (' + pastNotes.length + ')';
+    h.appendChild(title);
+    pastNotes.forEach(function (item) {
+      var c = document.createElement('div');
+      c.className = 'note old';
+      var m = document.createElement('div');
+      m.className = 'who';
+      m.textContent = [item.n.a || 'Agent', item.n.t ? fmt(item.n.t) : '', item.chat].filter(Boolean).join(' · ');
+      c.appendChild(m);
+      var t = document.createElement('div');
+      t.className = 'txt';
+      t.textContent = item.n.x || '';
+      c.appendChild(t);
+      h.appendChild(c);
+    });
+    box.appendChild(h);
+  }
+  syncComposer();
+}
+
+function syncComposer() {
+  var len = $('input').value.length;
+  $('counter').textContent = len ? (len + ' / ' + CFG.MAX_NOTE) : '';
+  $('save').textContent = editing > -1 ? 'Güncelle' : 'Ekle';
+  $('save').disabled = busy || !$('input').value.trim();
+  $('cancel').hidden = editing < 0;
+  $('input').disabled = busy;
+}
+
+function startEdit(i) {
+  editing = i;
+  $('input').value = notes[i].x || '';
+  $('input').focus();
+  syncComposer();
+}
+function cancelEdit() {
+  editing = -1;
+  $('input').value = '';
+  syncComposer();
+}
+
+function withSave(mutate) {
+  var snapshot = JSON.stringify(notes);
+  mutate();
+  busy = true; banner(''); syncComposer();
+  return persist()
+    .then(function () { busy = false; render(); })
+    .catch(function (err) {
+      notes = JSON.parse(snapshot);
+      busy = false; render();
+      if (err && err.auth) { show('auth'); return; }
+      banner('Kaydedilemedi: ' + (err && err.message ? err.message : 'bilinmeyen hata'));
+    });
+}
+
+function submit() {
+  var text = $('input').value.trim();
+  if (!text || busy) return;
+  var idx = editing;
+  return withSave(function () {
+    if (idx > -1) {
+      notes[idx] = { t: Date.now(), a: notes[idx].a || me || '', x: text };
+    } else {
+      notes.unshift({ t: Date.now(), a: me || '', x: text });
     }
+    editing = -1;
+    $('input').value = '';
+  });
+}
 
-    // LiveChat postMessage Mesaj Dinleyicisi (Sohbet Değişimini Yakalar)
-    window.addEventListener('message', function(event) {
-      try {
-        const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-        if (data && data.payload) {
-          const payload = data.payload;
-          const customerId = payload.customer_id || payload.chat_id || (payload.customer && payload.customer.id) || (payload.customer && payload.customer.email);
-          if (customerId) {
-            setCustomer(customerId);
-          }
-        }
-      } catch (e) {}
+function removeNote(i) {
+  if (busy) return;
+  return withSave(function () {
+    notes.splice(i, 1);
+    if (editing === i) { editing = -1; $('input').value = ''; }
+  });
+}
+
+/* ---------- açılış ---------- */
+function openProfile(profile) {
+  var chat = (profile && profile.chat) || {};
+  // Agent App bazı sürümlerde chat_id + id (thread) verir, bazılarında sadece id (chat).
+  var chatId = chat.chat_id || chat.id;
+  var threadHint = chat.chat_id ? chat.id : null;
+
+  if (!chatId) { setState('Bu görünümde bağlı bir sohbet yok.'); return; }
+  if (!token) { show('auth'); return; }
+
+  setState('Notlar yükleniyor…');
+  whoAmI()
+    .then(function () { return loadChat(chatId, threadHint, profile && profile.email); })
+    .then(function () { editing = -1; $('input').value = ''; show('main'); banner(''); render(); })
+    .then(function () { return loadHistory().then(render); })
+    .catch(function (err) {
+      if (err && err.auth) { show('auth'); return; }
+      setState('Notlar açılamadı: ' + (err && err.message ? err.message : 'bilinmeyen hata'), true);
+    });
+}
+
+function boot() {
+  if (!window.LiveChat || !window.LiveChat.createDetailsWidget) {
+    setState('Bu sayfa LiveChat Agent App içinde çalışacak şekilde tasarlandı.', true);
+    return;
+  }
+  if (CFG.CLIENT_ID === 'BURAYA_CLIENT_ID') {
+    setState('Kurulum eksik: index.html içindeki CLIENT_ID alanını doldur.', true);
+    return;
+  }
+
+  $('input').addEventListener('input', syncComposer);
+  $('input').addEventListener('keydown', function (e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); submit(); }
+  });
+  $('save').addEventListener('click', submit);
+  $('cancel').addEventListener('click', cancelEdit);
+
+  window.LiveChat.createDetailsWidget().then(function (widget) {
+    // LiveChat temasını takip et
+    var applyTheme = function (t) { if (t) document.documentElement.setAttribute('data-theme', t); };
+    try { applyTheme(widget.getTheme && widget.getTheme()); } catch (e) {}
+    widget.on('change_theme', function (d) { applyTheme(d && d.theme); });
+
+    $('connect').addEventListener('click', function () {
+      setState('Bağlanıyor…');
+      authPopup()
+        .then(function (t) {
+          if (!t) { show('auth'); return; }
+          var p = widget.getCustomerProfile && widget.getCustomerProfile();
+          openProfile(p);
+        })
+        .catch(function () { show('auth'); });
     });
 
-    // SDK Başlatıcı
-    if (window.LiveChat) {
-      LiveChat.createDetailsWidget().then((widget) => {
-        setStatus('Sistem Aktif', '#28a745');
+    widget.on('customer_profile', openProfile);
 
-        const updateFn = (data) => {
-          if (!data) return;
-          const id = data.email || data.id || (data.customer && (data.customer.email || data.customer.id));
-          if (id) setCustomer(id);
-        };
-
-        widget.on('customer_profile', updateFn);
-        widget.on('customer_details', updateFn);
-        widget.on('chat_details', updateFn);
-      }).catch(() => {});
-    }
-
-    // Kaydet Butonu
-    document.getElementById('saveBtn').addEventListener('click', () => {
-      const text = document.getElementById('noteInput').value;
-
-      if (!currentKey) {
-        setStatus('❌ Müşteri seçili değil!', '#dc3545');
-        return;
-      }
-
-      localStorage.setItem(currentKey, text);
-      setStatus('✅ Not Kaydedildi!', '#28a745');
-      setTimeout(() => setStatus('Hazır', '#28a745'), 2000);
+    authSilent().then(function () {
+      var p = widget.getCustomerProfile && widget.getCustomerProfile();
+      if (p) openProfile(p);
+      else if (!token) show('auth');
+      else setState('Bir sohbet seç.');
     });
+  }).catch(function () {
+    setState('Agent App bağlantısı kurulamadı.', true);
+  });
+}
 
-    function setStatus(msg, color) {
-      const el = document.getElementById('status');
-      el.innerText = msg;
-      el.style.color = color || '#333';
-    }
-  </script>
-
+boot();
+</script>
 </body>
 </html>
