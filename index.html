@@ -3,66 +3,72 @@
 <head>
   <meta charset="UTF-8">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 12px; margin: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 12px; margin: 0; background: #fff; }
     h4 { margin: 0 0 8px 0; font-size: 13px; color: #333; }
-    textarea { width: 100%; height: 100px; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; resize: vertical; font-size: 13px; outline: none; }
+    textarea { width: 100%; height: 110px; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; resize: vertical; font-size: 13px; outline: none; }
+    textarea:focus { border-color: #0066ff; }
     button { width: 100%; margin-top: 8px; padding: 10px; background-color: #0066ff; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 13px; }
     button:hover { background-color: #0052cc; }
     #status { margin-top: 8px; font-size: 12px; text-align: center; font-weight: bold; min-height: 18px; }
+    #customerTag { font-size: 11px; color: #777; margin-bottom: 6px; display: block; word-break: break-all; }
   </style>
   <script src="https://unpkg.com/@livechat/agent-app-sdk@2.0.0/dist/agent-app-sdk.umd.js"></script>
 </head>
 <body>
 
   <h4>Müşteri Notu</h4>
-  <textarea id="noteInput" placeholder="Not yazın..."></textarea>
-  <button id="saveBtn">Kaydet</button>
+  <span id="customerTag">Müşteri yükleniyor...</span>
+  <textarea id="noteInput" placeholder="Bu müşteri için not yazın..."></textarea>
+  <button id="saveBtn">Notu Kaydet</button>
   <div id="status"></div>
 
   <script>
-    let currentCustomerKey = 'default_customer';
+    let currentCustomerKey = null;
 
-    function loadSavedNote() {
+    function loadNote() {
+      if (!currentCustomerKey) return;
       const saved = localStorage.getItem(currentCustomerKey) || '';
       document.getElementById('noteInput').value = saved;
     }
 
-    // LiveChat SDK Başlatma
-    function initWidget() {
-      if (window.LiveChat && typeof LiveChat.createDetailsWidget === 'function') {
-        LiveChat.createDetailsWidget().then((widget) => {
-          setStatus('Hazır', '#28a745');
-          
-          widget.on('customer_profile', (profile) => {
-            if (profile && (profile.id || profile.email)) {
-              currentCustomerKey = 'lc_note_' + (profile.email || profile.id);
-              loadSavedNote();
-            }
-          });
-        }).catch(() => {
-          fallbackInit();
-        });
-      } else {
-        fallbackInit();
-      }
+    function setCustomer(idOrEmail) {
+      if (!idOrEmail) return;
+      currentCustomerKey = 'lc_note_v2_' + idOrEmail;
+      document.getElementById('customerTag').innerText = 'Seçili: ' + idOrEmail;
+      loadNote();
     }
 
-    // SDK Başarısız Olursa B-Planı (URL'den müşteri tespiti)
-    function fallbackInit() {
-      setStatus('Hazır', '#28a745');
-      const urlParams = new URLSearchParams(window.location.search);
-      const cid = urlParams.get('customer_id') || urlParams.get('chat_id') || window.location.pathname;
-      currentCustomerKey = 'lc_note_' + cid;
-      loadSavedNote();
+    // SDK Kurulumu
+    if (window.LiveChat) {
+      LiveChat.createDetailsWidget().then((widget) => {
+        setStatus('Sistem Aktif', '#28a745');
+
+        // Müşteri değişim olayı
+        widget.on('customer_profile', (data) => {
+          if (data) {
+            const identifier = data.email || data.id || (data.customer && data.customer.email) || (data.customer && data.customer.id);
+            if (identifier) {
+              setCustomer(identifier);
+            }
+          }
+        });
+      }).catch(() => {
+        setStatus('SDK Bağlanamadı', '#dc3545');
+      });
     }
 
     // Kaydet Butonu
     document.getElementById('saveBtn').addEventListener('click', () => {
       const text = document.getElementById('noteInput').value;
+
+      if (!currentCustomerKey) {
+        setStatus('❌ Müşteri seçili değil!', '#dc3545');
+        return;
+      }
+
       localStorage.setItem(currentCustomerKey, text);
-      
-      setStatus('✅ Kaydedildi!', '#28a745');
-      setTimeout(() => setStatus('', ''), 2000);
+      setStatus('✅ Not Kaydedildi!', '#28a745');
+      setTimeout(() => setStatus('Sistem Aktif', '#28a745'), 2000);
     });
 
     function setStatus(msg, color) {
@@ -70,11 +76,6 @@
       el.innerText = msg;
       el.style.color = color || '#333';
     }
-
-    // Sayfa yüklenince çalıştır
-    window.onload = function() {
-      setTimeout(initWidget, 500);
-    };
   </script>
 
 </body>
