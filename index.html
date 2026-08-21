@@ -3,14 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 10px; margin: 0; }
-    h4 { margin: 0 0 10px 0; color: #333; }
-    textarea { width: 100%; height: 100px; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; resize: vertical; }
-    button { width: 100%; margin-top: 8px; padding: 10px; background-color: #4285f4; color: white; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 12px; margin: 0; background-color: #f9f9f9; }
+    h4 { margin: 0 0 10px 0; color: #2c3e50; font-size: 14px; }
+    textarea { width: 100%; height: 110px; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; resize: vertical; font-size: 13px; }
+    button { width: 100%; margin-top: 10px; padding: 10px; background-color: #4285f4; color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 13px; }
     button:hover { background-color: #357ae8; }
-    #status { margin-top: 8px; font-size: 12px; color: #666; }
+    #status { margin-top: 10px; font-size: 12px; color: #555; text-align: center; }
   </style>
-  <script src="https://unpkg.com/@livechat/agent-app-sdk@latest/dist/agent-app-sdk.min.js"></script>
+  <!-- Doğru UMD CDN Bağlantısı -->
+  <script src="https://unpkg.com/@livechat/agent-app-sdk@2.0.0/dist/agent-app-sdk.umd.js"></script>
 </head>
 <body>
   <h4>Müşteri Notları</h4>
@@ -19,48 +20,52 @@
   <div id="status"></div>
 
   <script>
-    let widget = null;
+    let widgetInstance = null;
     let currentCustomerId = null;
 
     // SDK Başlatma
-    createDetailsWidget().then((instance) => {
-      widget = instance;
+    if (window.LiveChat) {
+      LiveChat.createDetailsWidget().then((widget) => {
+        widgetInstance = widget;
+        showStatus('Hazır');
 
-      // Müşteri profil değişimi dinleyici
-      widget.on('customer_profile', (profile) => {
-        if (!profile) return;
-        currentCustomerId = profile.id;
-        
-        // Varsa eski notu yükle
-        const existingNote = profile.properties?.my_notes?.note || '';
-        document.getElementById('noteInput').value = existingNote;
-        showStatus('');
+        // Müşteri seçildiğinde mevcut notu yükle
+        widget.on('customer_profile', (profile) => {
+          if (!profile) return;
+          currentCustomerId = profile.id;
+          
+          // Müşteriye ait not varsa getir
+          const existingNote = profile.properties?.my_notes?.note || '';
+          document.getElementById('noteInput').value = existingNote;
+          showStatus('');
+        });
+      }).catch((err) => {
+        showStatus('SDK Bağlantı Hatası!');
       });
-    });
+    }
 
     // Kaydet Butonu
     document.getElementById('saveBtn').addEventListener('click', () => {
-      if (!widget || !currentCustomerId) {
-        showStatus('Müşteri bilgisi alınamadı!');
+      if (!widgetInstance) {
+        showStatus('Widget başlatılamadı.');
         return;
       }
 
       const noteText = document.getElementById('noteInput').value;
       showStatus('Kaydediliyor...');
 
-      // Customer Property olarak kaydet
-      widget.putCustomerProperty({
-        id: currentCustomerId,
+      // LiveChat Property kaydı
+      widgetInstance.putCustomerProperty({
         namespace: 'my_notes',
         name: 'note',
         value: noteText
       })
       .then(() => {
-        showStatus('✅ Not başarıyla kaydedildi!');
+        showStatus('✅ Not kaydedildi!');
       })
       .catch((err) => {
         console.error(err);
-        showStatus('❌ Kayıt başarısız: ' + (err.message || 'Yetki hatası'));
+        showStatus('❌ Kayıt başarısız!');
       });
     });
 
