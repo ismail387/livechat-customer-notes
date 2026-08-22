@@ -95,12 +95,10 @@
 <script>
 /* ==================================================================== *
  *  MARKALAR
- *  Her markanın kendi LiveChat hesabında ayrı bir uygulaması var, yani
- *  ayrı bir Client ID. Widget adresine ?b=<anahtar> ekleyerek hangi
- *  markanın çalıştığını söylüyoruz. Örnek:
- *    https://.../?b=bettilt
- *  Notlar her markanın kendi hesabında, kendi namespace'inde durur;
- *  markalar arasında hiçbir şekilde karışmaz.
+ *  Her markanın kendi LiveChat hesabında ayrı bir uygulaması, yani ayrı
+ *  bir Client ID var. Widget adresine ?b=<anahtar> ekleyerek hangi marka
+ *  olduğunu söylüyoruz:  https://.../?b=bettilt
+ *  Notlar her markanın kendi hesabında durur, markalar arasında karışmaz.
  * ==================================================================== */
 var BRANDS = {
   bahsegel:   { CLIENT_ID: 'e60b10aab9458201f43cada83909f79b' },
@@ -108,45 +106,42 @@ var BRANDS = {
   casinomhub: { CLIENT_ID: '' },
   rokubet:    { CLIENT_ID: '' },
   paribahis:  { CLIENT_ID: '' },
-  // trbet ve bircasino AYNI LiveChat hesabını kullanıyor:
-  // ikisine de o hesabın tek Client ID'sini yaz.
+  // trbet ve bircasino AYNI LiveChat hesabı: ikisine de o hesabın ID'sini yaz.
   trbet:      { CLIENT_ID: '' },
   bircasino:  { CLIENT_ID: '' }
 };
-
-// ?b= verilmezse bu marka varsayılır (mevcut kurulumu bozmamak için).
 var DEFAULT_BRAND = 'bahsegel';
 
 /* --------------------------- ORTAK AYARLAR -------------------------- */
 var CFG = {
-  CLIENT_ID: '',                   // markadan doldurulur, elle dokunma
-  BRAND:     '',                   // aktif marka anahtarı
-  PROPERTY:  'chat_note',          // Console'da kaydettiğin property adı
-  TAG:       'not',                // Not varken sohbete atanacak etiket ('' = kapalı)
+  CLIENT_ID: '',
+  BRAND:     '',
+  PROPERTY:  'chat_note',        // notların tutulduğu property
+  PLAYER_PROP: 'player_id',      // oyuncu kimliğinin yazıldığı property
+  TAG:       'not',              // not varken atanan etiket ('' = kapalı)
   API:       'https://api.livechatinc.com/v3.6',
   SCOPES:    'chats--access:ro,chats--access:rw,agents--all:ro',
-  REDIRECT:  '',                   // boş = sayfanın query'siz adresi
-  REGION:    '',                   // gerekirse 'dal' / 'fra'
+  REDIRECT:  '',
+  REGION:    '',
   MAX_NOTE:  2000,
-  HISTORY:   false,                // aynı müşterinin diğer sohbetlerindeki notlar
-  SECTION:   true,                 // müşteri bilgileri görünümüne özet blok
-  // Bölüm başlığı Console'daki "Initial state" alanındaki title ile BİREBİR aynı
-  // olmalı; LiveChat bu başlığı bölümün kimliği olarak kullanıyor, bu yüzden
-  // çalışma anında değiştirilemez (not sayısı başlığa yazılamaz).
-  SECTION_TITLE: 'Notlar',
-  TOAST:     true                  // notu olan sohbet açılınca bildirim
+  SEARCH_LIMIT: 50,              // oyuncu geçmişinde taranacak sohbet sayısı
+  SECTION:   true,
+  SECTION_TITLE: 'Notlar',       // Console > Initial state içindeki title ile aynı olmalı
+  TOAST:     true
 };
+
+// Custom variable'da oyuncu kimliğini taşıyabilecek alan adları.
+var PLAYER_KEYS = ['playerid', 'playerno', 'userid', 'memberid'];
 
 /* ==================================================================== */
 var $ = function (id) { return document.getElementById(id); };
 
 var widget = null;
 var token = null;
-var me = null;               // notu yazan agent etiketi
-var ctx = null;              // { chatId, threadId, email, custId }
-var notes = [];              // [{ i, t, a, x, e?, v? }]
-var pastNotes = [];          // diğer sohbetlerdeki notlar (salt okunur)
-var editing = null;          // düzenlenen notun id'si
+var me = null;
+var ctx = null;          // { chatId, threadId, email, custId, playerId }
+var notes = [];          // birleşik liste; her notta _c = bulunduğu sohbet
+var editing = null;      // düzenlenen not nesnesi
 var busy = false;
 var toastedChat = null;
 var TOKEN_KEY = '';
@@ -182,6 +177,7 @@ function nid() {
   return Date.now().toString(36) + '-' + Math.floor(Math.random() * 1679616).toString(36);
 }
 function looksLikeEmail(v) { return typeof v === 'string' && v.indexOf('@') > -1; }
+function normKey(k) { return String(k || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
 /* ---------- marka çözümleme ---------- */
 function pickBrand() {
@@ -197,8 +193,8 @@ function pickBrand() {
   }
   CFG.BRAND = key;
   CFG.CLIENT_ID = brand.CLIENT_ID;
-  ['PROPERTY', 'TAG', 'REGION', 'HISTORY', 'SECTION', 'TOAST'].forEach(function (k) {
-    if (brand[k] !== undefined) CFG[k] = brand[k];   // markaya özel istisna gerekirse
+  ['PROPERTY', 'PLAYER_PROP', 'TAG', 'REGION', 'SECTION', 'TOAST', 'SEARCH_LIMIT'].forEach(function (k) {
+    if (brand[k] !== undefined) CFG[k] = brand[k];
   });
   TOKEN_KEY = 'lcnotes.token.' + CFG.CLIENT_ID;
   return null;
@@ -223,8 +219,6 @@ function storeToken(data) {
 }
 function redirectUri() {
   if (CFG.REDIRECT) return CFG.REDIRECT;
-  // LiveChat widget iframe'ini query parametreleriyle açar; redirect_uri'de
-  // query yasak olduğu için sadece origin + pathname kullanıyoruz.
   return window.location.origin + window.location.pathname;
 }
 function accounts() {
@@ -262,10 +256,7 @@ function whoAmI() {
       return api('list_agents', {}, 'configuration').then(function (res) {
         var list = Array.isArray(res) ? res : ((res && res.agents) || []);
         for (var i = 0; i < list.length; i++) {
-          if (list[i] && list[i].account_id === accId) {
-            me = list[i].name || list[i].id || '';
-            break;
-          }
+          if (list[i] && list[i].account_id === accId) { me = list[i].name || list[i].id || ''; break; }
         }
         return me;
       }).catch(function () { return me; });
@@ -302,91 +293,150 @@ function parseNotes(holder) {
   }
   return [];
 }
-// Eski notlarda id yok; içerikten türeyen sabit bir id veriyoruz ki
-// iki agent aynı notu aynı id ile görsün.
-function normalize(list) {
+function normalize(list, chatId) {
   return (list || []).map(function (n, i) {
-    if (!n || typeof n !== 'object') return { i: 'l' + i, t: 0, a: '', x: String(n || '') };
+    if (!n || typeof n !== 'object') n = { t: 0, a: '', x: String(n || '') };
     if (!n.i) n.i = 'l' + (n.t || 0) + '-' + i;
+    if (chatId) n._c = chatId;
     return n;
   });
+}
+function strip(n) {
+  var o = {};
+  for (var k in n) if (k !== '_c' && Object.prototype.hasOwnProperty.call(n, k)) o[k] = n[k];
+  return o;
 }
 function byId(list, id) {
   for (var i = 0; i < list.length; i++) if (list[i].i === id) return i;
   return -1;
 }
-function liveNotes() {
-  return notes.filter(function (n) { return !n.v; });
+function liveNotes() { return notes.filter(function (n) { return !n.v; }); }
+function sortNotes(list) {
+  list.sort(function (a, b) { return (b.t || 0) - (a.t || 0); });
+  return list;
 }
 
-function loadChat(chatId, threadHint, email, custId) {
+/* ---------- oyuncu kimliği ---------- *
+ * Sohbetin custom variable'larında playerId geliyor. Bu kimlik, müşteri
+ * cihaz/tarayıcı değiştirse bile sabit kaldığı için notları ona bağlıyoruz. */
+function pickFromPairs(pairs) {
+  pairs = pairs || [];
+  for (var i = 0; i < pairs.length; i++) {
+    var p = pairs[i];
+    if (!p || typeof p !== 'object') continue;
+    if ('key' in p && 'value' in p) {
+      if (PLAYER_KEYS.indexOf(normKey(p.key)) > -1 && p.value) return String(p.value);
+      continue;
+    }
+    for (var k in p) {
+      if (PLAYER_KEYS.indexOf(normKey(k)) > -1 && p[k]) return String(p[k]);
+    }
+  }
+  return '';
+}
+function playerFromProfile(profile) {
+  var cv = profile && (profile.customVariables || profile.custom_variables);
+  if (!cv) return '';
+  if (Array.isArray(cv)) return pickFromPairs(cv);
+  if (typeof cv === 'object') return pickFromPairs([cv]);
+  return '';
+}
+function playerFromChat(chat) {
+  var users = (chat && chat.users) || [];
+  for (var i = 0; i < users.length; i++) {
+    if (users[i] && users[i].type === 'customer') {
+      var v = pickFromPairs(users[i].session_fields);
+      if (v) return v;
+    }
+  }
+  var bag = chat && chat.properties && chat.properties[CFG.CLIENT_ID];
+  if (bag && bag[CFG.PLAYER_PROP]) return String(bag[CFG.PLAYER_PROP]);
+  return '';
+}
+
+/* ---------- yükleme ---------- */
+function loadChat(chatId, threadHint, profile) {
   var payload = { chat_id: chatId };
   if (threadHint) payload.thread_id = threadHint;
   return api('get_chat', payload).then(function (chat) {
     var thread = chat.thread || {};
     ctx = {
-      chatId: chat.id || chatId, threadId: thread.id || threadHint,
-      email: email || '', custId: custId || ''
+      chatId: chat.id || chatId,
+      threadId: thread.id || threadHint,
+      email: (profile && profile.email) || '',
+      custId: (profile && profile.id) || '',
+      playerId: playerFromProfile(profile) || playerFromChat(chat) || ''
     };
     var found = parseNotes(chat);
-    if (!found.length) found = parseNotes(thread);   // eski thread kayıtları
-    notes = normalize(found);
+    if (!found.length) found = parseNotes(thread);
+    notes = normalize(found, ctx.chatId);
     if (!ctx.threadId) throw new Error('Bu sohbette kayıt yapılabilir bir thread bulunamadı.');
   });
 }
 
-function sameCustomer(chat) {
-  var users = (chat && chat.users) || [];
-  for (var i = 0; i < users.length; i++) {
-    var u = users[i];
-    if (!u || u.type !== 'customer') continue;
-    if (ctx.custId && u.id === ctx.custId) return true;
-    if (ctx.email && u.email && String(u.email).toLowerCase() === String(ctx.email).toLowerCase()) return true;
-  }
-  return false;
-}
-function loadHistory() {
-  pastNotes = [];
-  if (!CFG.HISTORY || (!ctx.email && !ctx.custId)) return Promise.resolve();
-  var filters = {};
-  if (ctx.custId) filters.customer_id = ctx.custId;
-  else filters.customer_email = ctx.email;
-  return api('list_archives', { filters: filters, limit: 25, sort_order: 'desc' }).then(function (res) {
-    var seen = {};
-    (res.chats || []).forEach(function (c) {
+// Oyuncunun diğer sohbetlerindeki notlar. Arşiv metin aramasında playerId
+// indeksli olduğu için tek çağrıyla bulunuyor; dönen her kayıt kod tarafında
+// gerçekten aynı oyuncuya ait mi diye doğrulanıyor.
+function loadPlayerNotes() {
+  var pid = ctx && ctx.playerId;
+  if (!pid) return Promise.resolve([]);
+
+  var withTag = { filters: { query: String(pid) }, limit: CFG.SEARCH_LIMIT, sort_order: 'desc' };
+  if (CFG.TAG) withTag.filters.tags = { values: [CFG.TAG] };
+
+  var collect = function (chats) {
+    var out = [], seen = {};
+    (chats || []).forEach(function (c) {
       if (!c || !c.id || c.id === ctx.chatId || seen[c.id]) return;
-      if (!sameCustomer(c)) return;
       seen[c.id] = 1;
+      if (playerFromChat(c) !== String(pid)) return;      // yanlış eşleşmeyi ele
       var found = parseNotes(c);
       if (!found.length && c.thread) found = parseNotes(c.thread);
-      normalize(found).forEach(function (n) { pastNotes.push({ chat: c.id, n: n }); });
+      if (!found.length) return;
+      normalize(found, c.id).forEach(function (n) { out.push(n); });
     });
-    pastNotes.sort(function (a, b) { return (b.n.t || 0) - (a.n.t || 0); });
-  }).catch(function () { pastNotes = []; });
+    return out;
+  };
+
+  return api('list_archives', withTag)
+    .then(function (res) {
+      var got = collect(res.chats);
+      if (got.length || !CFG.TAG) return got;
+      // etiketi düşmemiş eski sohbetler olabilir: etiket filtresi olmadan bir daha
+      return api('list_archives', {
+        filters: { query: String(pid) }, limit: CFG.SEARCH_LIMIT, sort_order: 'desc'
+      }).then(function (r2) { return collect(r2.chats); });
+    })
+    .catch(function () { return []; });
 }
 
-/* ---------- yazma: çakışma korumalı ---------- *
- * Kaydetmeden hemen önce sohbeti yeniden okuyup listeyi sunucudaki son
- * haline uygularız. Böylece bu arada başka bir agent not eklediyse onun
- * notu kaybolmaz.                                                       */
-function commit(op) {
+/* ---------- yazma ---------- *
+ * Notun yaşadığı sohbete yazar. Kaydetmeden önce o sohbeti yeniden okur,
+ * böylece arada başka bir agent not eklediyse kaybolmaz.                 */
+function commitTo(chatId, op) {
   if (busy || !ctx) return Promise.resolve();
   busy = true; banner(''); syncComposer();
-  return api('get_chat', { chat_id: ctx.chatId, thread_id: ctx.threadId })
+  return api('get_chat', { chat_id: chatId })
     .then(function (chat) {
-      var current = parseNotes(chat);
-      if (!current.length) current = parseNotes(chat.thread || {});
-      var next = op(normalize(current));
-      var props = {}; props[CFG.CLIENT_ID] = {};
-      props[CFG.CLIENT_ID][CFG.PROPERTY] = JSON.stringify(next);
-      return api('update_chat_properties', { id: ctx.chatId, properties: props })
-        .then(function () { notes = next; });
+      var cur = parseNotes(chat);
+      if (!cur.length) cur = parseNotes(chat.thread || {});
+      var next = op(normalize(cur, chatId));
+      var bag = {};
+      bag[CFG.PROPERTY] = JSON.stringify(next.map(strip));
+      if (chatId === ctx.chatId && ctx.playerId) bag[CFG.PLAYER_PROP] = String(ctx.playerId);
+      var props = {}; props[CFG.CLIENT_ID] = bag;
+      return api('update_chat_properties', { id: chatId, properties: props })
+        .then(function () {
+          notes = notes.filter(function (n) { return n._c !== chatId; })
+                       .concat(normalize(next, chatId));
+          sortNotes(notes);
+        });
     })
     .then(function () {
-      if (!CFG.TAG) return null;
-      var action = liveNotes().length ? 'tag_thread' : 'untag_thread';
-      return api(action, { chat_id: ctx.chatId, thread_id: ctx.threadId, tag: CFG.TAG })
-        .catch(function () { return null; });   // etiket yoksa/izin yoksa not yine kaydedildi
+      if (!CFG.TAG || chatId !== ctx.chatId) return null;
+      var mineHere = notes.filter(function (n) { return n._c === ctx.chatId && !n.v; }).length;
+      return api(mineHere ? 'tag_thread' : 'untag_thread',
+        { chat_id: ctx.chatId, thread_id: ctx.threadId, tag: CFG.TAG }).catch(function () { return null; });
     })
     .then(function () { busy = false; render(); })
     .catch(function (err) {
@@ -397,30 +447,29 @@ function commit(op) {
 }
 
 function addNote(text) {
-  return commit(function (list) {
+  return commitTo(ctx.chatId, function (list) {
     list.unshift({ i: nid(), t: Date.now(), a: me || '', x: text });
     return list;
   });
 }
-function editNote(id, text) {
-  return commit(function (list) {
-    var k = byId(list, id);
+function editNote(note, text) {
+  return commitTo(note._c || ctx.chatId, function (list) {
+    var k = byId(list, note.i);
     if (k < 0) { list.unshift({ i: nid(), t: Date.now(), a: me || '', x: text }); return list; }
-    list[k].x = text;
-    list[k].e = Date.now();
+    list[k].x = text; list[k].e = Date.now();
     return list;
   });
 }
-function deleteNote(id) {
-  return commit(function (list) {
-    var k = byId(list, id);
+function deleteNote(note) {
+  return commitTo(note._c || ctx.chatId, function (list) {
+    var k = byId(list, note.i);
     if (k > -1) list.splice(k, 1);
     return list;
   });
 }
-function voidNote(id, undo) {
-  return commit(function (list) {
-    var k = byId(list, id);
+function voidNote(note, undo) {
+  return commitTo(note._c || ctx.chatId, function (list) {
+    var k = byId(list, note.i);
     if (k < 0) return list;
     if (undo) delete list[k].v;
     else list[k].v = { a: me || '', t: Date.now() };
@@ -436,7 +485,7 @@ function updateSection() {
   if (live.length) {
     var last = live[0];
     comps.push({ type: 'label_value', data: {
-      label: live.length + (live.length > 1 ? ' not' : ' not') + ' · ' + (last.a || 'Agent'),
+      label: live.length + ' not · ' + (last.a || 'Agent'),
       value: trim(last.x, 90)
     }});
   } else {
@@ -447,7 +496,7 @@ function updateSection() {
     id: 'open-notes', openApp: true, primary: true
   }});
   try {
-    // title sabit: bölümün kimliği. Değiştirilirse çağrı hiçbir bölüme denk gelmez.
+    // title sabit: bölümün kimliği. Değişirse çağrı hiçbir bölüme denk gelmez.
     widget.modifySection({ title: CFG.SECTION_TITLE, components: comps });
   } catch (e) {}
 }
@@ -456,15 +505,18 @@ function maybeToast() {
   var n = liveNotes().length;
   if (!n || !ctx || toastedChat === ctx.chatId) return;
   toastedChat = ctx.chatId;
-  try {
-    widget.setToast({ content: 'Bu müşteri için ' + n + ' not var', kind: 'success' });
-  } catch (e) {}
+  try { widget.setToast({ content: 'Bu üye için ' + n + ' not var', kind: 'success' }); } catch (e) {}
 }
 
 /* ---------- arayüz ---------- */
-function noteCard(n, readOnly) {
+function mkBtn(label, cls, fn) {
+  var b = document.createElement('button');
+  b.type = 'button'; b.className = cls; b.textContent = label; b.onclick = fn;
+  return b;
+}
+function noteCard(n) {
   var card = document.createElement('div');
-  card.className = 'note' + (n.v ? ' void' : '') + (readOnly ? ' old' : '');
+  card.className = 'note' + (n.v ? ' void' : '');
 
   var meta = document.createElement('div');
   meta.className = 'meta';
@@ -475,24 +527,14 @@ function noteCard(n, readOnly) {
     .filter(Boolean).join(' · ');
   meta.appendChild(who);
 
-  if (!readOnly) {
-    var acts = document.createElement('span');
-    acts.className = 'acts';
-    var mine = !!(me && n.a === me);
-
-    if (mine && !n.v) {
-      acts.appendChild(mkBtn('Düzenle', 'iconbtn', function () { startEdit(n.i); }));
-    }
-    if (n.v) {
-      acts.appendChild(mkBtn('Geri al', 'iconbtn', function () { voidNote(n.i, true); }));
-    } else {
-      acts.appendChild(mkBtn('Geçersiz kıl', 'iconbtn', function () { voidNote(n.i, false); }));
-    }
-    if (mine) {
-      acts.appendChild(mkBtn('Sil', 'iconbtn danger', function () { deleteNote(n.i); }));
-    }
-    meta.appendChild(acts);
-  }
+  var acts = document.createElement('span');
+  acts.className = 'acts';
+  var mine = !!(me && n.a === me);
+  if (mine && !n.v) acts.appendChild(mkBtn('Düzenle', 'iconbtn', function () { startEdit(n); }));
+  if (n.v) acts.appendChild(mkBtn('Geri al', 'iconbtn', function () { voidNote(n, true); }));
+  else acts.appendChild(mkBtn('Geçersiz kıl', 'iconbtn', function () { voidNote(n, false); }));
+  if (mine) acts.appendChild(mkBtn('Sil', 'iconbtn danger', function () { deleteNote(n); }));
+  meta.appendChild(acts);
   card.appendChild(meta);
 
   var txt = document.createElement('div');
@@ -508,38 +550,19 @@ function noteCard(n, readOnly) {
   }
   return card;
 }
-function mkBtn(label, cls, fn) {
-  var b = document.createElement('button');
-  b.type = 'button'; b.className = cls; b.textContent = label;
-  b.onclick = fn;
-  return b;
-}
-
 function render() {
   var box = $('notes');
   box.textContent = '';
   if (!notes.length) {
     var e = document.createElement('div');
     e.className = 'empty small';
-    e.textContent = 'Bu sohbet için henüz not yok.';
+    e.textContent = 'Bu üye için henüz not yok.';
     box.appendChild(e);
   }
-  notes.forEach(function (n) { box.appendChild(noteCard(n, false)); });
-
-  if (pastNotes.length) {
-    var h = document.createElement('div');
-    h.className = 'hist';
-    var title = document.createElement('div');
-    title.className = 'hist-title small muted';
-    title.textContent = 'Aynı müşterinin diğer sohbetleri (' + pastNotes.length + ')';
-    h.appendChild(title);
-    pastNotes.forEach(function (item) { h.appendChild(noteCard(item.n, true)); });
-    box.appendChild(h);
-  }
+  notes.forEach(function (n) { box.appendChild(noteCard(n)); });
   syncComposer();
   updateSection();
 }
-
 function syncComposer() {
   var len = $('input').value.length;
   $('counter').textContent = len ? (len + ' / ' + CFG.MAX_NOTE) : '';
@@ -548,26 +571,21 @@ function syncComposer() {
   $('cancel').hidden = !editing;
   $('input').disabled = busy;
 }
-function startEdit(id) {
-  var k = byId(notes, id);
-  if (k < 0) return;
-  editing = id;
-  $('input').value = notes[k].x || '';
+function startEdit(n) {
+  editing = n;
+  $('input').value = n.x || '';
   $('input').focus();
   syncComposer();
 }
 function cancelEdit() {
-  editing = null;
-  $('input').value = '';
-  syncComposer();
+  editing = null; $('input').value = ''; syncComposer();
 }
 function submit() {
   var text = $('input').value.trim();
   if (!text || busy) return;
-  var id = editing;
-  editing = null;
-  $('input').value = '';
-  return id ? editNote(id, text) : addNote(text);
+  var target = editing;
+  editing = null; $('input').value = '';
+  return target ? editNote(target, text) : addNote(text);
 }
 
 /* ---------- açılış ---------- */
@@ -581,14 +599,18 @@ function openProfile(profile) {
 
   setState('Notlar yükleniyor…');
   whoAmI()
-    .then(function () {
-      return loadChat(chatId, threadHint, profile && profile.email, profile && profile.id);
-    })
+    .then(function () { return loadChat(chatId, threadHint, profile); })
     .then(function () {
       editing = null; $('input').value = '';
-      show('main'); banner(''); render(); maybeToast();
+      show('main'); banner(''); render();
     })
-    .then(function () { return loadHistory().then(render); })
+    .then(function () {
+      // oyuncunun diğer sohbetlerindeki notlar aynı listeye karışır
+      return loadPlayerNotes().then(function (extra) {
+        if (extra.length) { notes = sortNotes(notes.concat(extra)); render(); }
+        maybeToast();
+      });
+    })
     .catch(function (err) {
       if (err && err.auth) { show('auth'); return; }
       setState('Notlar açılamadı: ' + (err && err.message ? err.message : 'bilinmeyen hata'), true);
@@ -596,7 +618,6 @@ function openProfile(profile) {
 }
 
 function boot() {
-  // Popup akışında bu sayfa token'la birlikte kısa süre popup içinde açılır.
   if (window.opener && window.location.hash.indexOf('access_token') > -1) {
     setState('Bağlantı tamamlandı, bu pencere kapanacak…');
     return;
