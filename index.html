@@ -32,9 +32,12 @@
   .note .who{font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .note .txt{white-space:pre-wrap; word-break:break-word}
   .note .acts{display:flex; gap:2px; flex:0 0 auto}
+  .note.void{opacity:.6}
+  .note.void .txt{text-decoration:line-through}
+  .voidnote{margin-top:4px; font-size:11px; color:var(--muted); font-style:italic}
   .iconbtn{
     background:none; border:0; color:var(--muted); cursor:pointer; padding:2px 4px;
-    font-size:11px; border-radius:4px;
+    font-size:11px; border-radius:4px; white-space:nowrap;
   }
   .iconbtn:hover{background:var(--line); color:var(--fg)}
   .iconbtn.danger:hover{background:var(--danger); color:#fff}
@@ -90,37 +93,59 @@
 <script src="https://unpkg.com/@livechat/agent-app-sdk@1.16.0/dist/agentapp.umd.min.js"></script>
 <script src="https://unpkg.com/@livechat/accounts-sdk@3.0.2/dist/accounts-sdk.min.js"></script>
 <script>
-/* ------------------------------------------------------------------ *
- *  AYARLAR — sadece CLIENT_ID zorunlu.
- * ------------------------------------------------------------------ */
-var CFG = {
-  CLIENT_ID: 'e60b10aab9458201f43cada83909f79b',   // Developer Console > uygulaman > Client ID
-  PROPERTY:  'chat_note',          // Console'da kaydettiğin property adı
-  TAG:       'not',                // Not kaydedilince atanacak etiket ('' = kapalı)
-  API:       'https://api.livechatinc.com/v3.6',
-  // Yetkilendirmede İSTENEN scope'lar. Console'daki listenin alt kümesi olmalı.
-  // Normal agent rolüne verilebilen 'access' varyantlarını istiyoruz; 'chats--all:*'
-  // yalnızca yöneticilere verilebildiği için istenirse normal agent 'invalid_scope' alır.
-  // '' yaparsan Console'daki bütün scope'lar istenir (sadece admin hesaplarda çalışır).
-  SCOPES:    'chats--access:ro,chats--access:rw,agents--all:ro',
-  REDIRECT:  '',                   // boş = otomatik (sayfanın query'siz adresi). Gerekirse elle yaz.
-  REGION:    '',                   // gerekirse 'dal' / 'fra' (bkz. rehber > Sorun giderme)
-  MAX_NOTE:  2000,                 // tek notta izin verilen karakter
-  HISTORY:   false                 // true: AYNI müşterinin diğer sohbetlerindeki notları da göster
-
+/* ==================================================================== *
+ *  MARKALAR
+ *  Her markanın kendi LiveChat hesabında ayrı bir uygulaması var, yani
+ *  ayrı bir Client ID. Widget adresine ?b=<anahtar> ekleyerek hangi
+ *  markanın çalıştığını söylüyoruz. Örnek:
+ *    https://.../?b=bettilt
+ *  Notlar her markanın kendi hesabında, kendi namespace'inde durur;
+ *  markalar arasında hiçbir şekilde karışmaz.
+ * ==================================================================== */
+var BRANDS = {
+  bahsegel:   { CLIENT_ID: 'e60b10aab9458201f43cada83909f79b' },
+  bettilt:    { CLIENT_ID: '' },
+  casinomhub: { CLIENT_ID: '' },
+  rokubet:    { CLIENT_ID: '' },
+  paribahis:  { CLIENT_ID: '' },
+  // trbet ve bircasino AYNI LiveChat hesabını kullanıyor:
+  // ikisine de o hesabın tek Client ID'sini yaz.
+  trbet:      { CLIENT_ID: '' },
+  bircasino:  { CLIENT_ID: '' }
 };
 
-/* ------------------------------------------------------------------ */
-var $ = function (id) { return document.getElementById(id); };
-var TOKEN_KEY = 'lcnotes.token.' + CFG.CLIENT_ID;
+// ?b= verilmezse bu marka varsayılır (mevcut kurulumu bozmamak için).
+var DEFAULT_BRAND = 'bahsegel';
 
+/* --------------------------- ORTAK AYARLAR -------------------------- */
+var CFG = {
+  CLIENT_ID: '',                   // markadan doldurulur, elle dokunma
+  BRAND:     '',                   // aktif marka anahtarı
+  PROPERTY:  'chat_note',          // Console'da kaydettiğin property adı
+  TAG:       'not',                // Not varken sohbete atanacak etiket ('' = kapalı)
+  API:       'https://api.livechatinc.com/v3.6',
+  SCOPES:    'chats--access:ro,chats--access:rw,agents--all:ro',
+  REDIRECT:  '',                   // boş = sayfanın query'siz adresi
+  REGION:    '',                   // gerekirse 'dal' / 'fra'
+  MAX_NOTE:  2000,
+  HISTORY:   false,                // aynı müşterinin diğer sohbetlerindeki notlar
+  SECTION:   true,                 // müşteri bilgileri görünümüne özet blok
+  TOAST:     true                  // notu olan sohbet açılınca bildirim
+};
+
+/* ==================================================================== */
+var $ = function (id) { return document.getElementById(id); };
+
+var widget = null;
 var token = null;
-var me = null;              // notu yazan agent etiketi
-var ctx = null;             // { chatId, threadId, email, custId }
-var notes = [];             // [{ t: ms, a: 'agent', x: 'metin' }]
-var pastNotes = [];           // diğer sohbetlerdeki notlar (salt okunur)
-var editing = -1;           // düzenlenen notun index'i, -1 = yeni not
+var me = null;               // notu yazan agent etiketi
+var ctx = null;              // { chatId, threadId, email, custId }
+var notes = [];              // [{ i, t, a, x, e?, v? }]
+var pastNotes = [];          // diğer sohbetlerdeki notlar (salt okunur)
+var editing = null;          // düzenlenen notun id'si
 var busy = false;
+var toastedChat = null;
+var TOKEN_KEY = '';
 
 /* ---------- yardımcılar ---------- */
 function show(which) {
@@ -142,9 +167,38 @@ function fmt(ts) {
       { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
   } catch (e) { return ''; }
 }
+function trim(s, n) {
+  s = String(s || '').replace(/\s+/g, ' ').trim();
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
 function safeGet(k) { try { return window.sessionStorage.getItem(k); } catch (e) { return null; } }
 function safeSet(k, v) { try { window.sessionStorage.setItem(k, v); } catch (e) {} }
 function safeDel(k) { try { window.sessionStorage.removeItem(k); } catch (e) {} }
+function nid() {
+  return Date.now().toString(36) + '-' + Math.floor(Math.random() * 1679616).toString(36);
+}
+function looksLikeEmail(v) { return typeof v === 'string' && v.indexOf('@') > -1; }
+
+/* ---------- marka çözümleme ---------- */
+function pickBrand() {
+  var key = '';
+  try {
+    key = (new URLSearchParams(window.location.search).get('b') || '').trim().toLowerCase();
+  } catch (e) { key = ''; }
+  if (!key) key = DEFAULT_BRAND;
+  var brand = BRANDS[key];
+  if (!brand) return 'Bilinmeyen marka: "' + key + '". Geçerli anahtarlar: ' + Object.keys(BRANDS).join(', ');
+  if (!/^[0-9a-f]{32}$/i.test(String(brand.CLIENT_ID || ''))) {
+    return '"' + key + '" markasının Client ID\'si girilmemiş. index.html içindeki BRANDS listesini doldur.';
+  }
+  CFG.BRAND = key;
+  CFG.CLIENT_ID = brand.CLIENT_ID;
+  ['PROPERTY', 'TAG', 'REGION', 'HISTORY', 'SECTION', 'TOAST'].forEach(function (k) {
+    if (brand[k] !== undefined) CFG[k] = brand[k];   // markaya özel istisna gerekirse
+  });
+  TOKEN_KEY = 'lcnotes.token.' + CFG.CLIENT_ID;
+  return null;
+}
 
 /* ---------- yetkilendirme ---------- */
 function cachedToken() {
@@ -163,11 +217,10 @@ function storeToken(data) {
   safeSet(TOKEN_KEY, JSON.stringify({ token: token, exp: Date.now() + ttl }));
   return token;
 }
-// LiveChat, widget iframe'ini query parametreleriyle açar. AccountsSDK varsayılan olarak
-// redirect_uri = window.location.href kullanır; içinde '?' olan bir redirect_uri LiveChat
-// tarafından reddedilir (accounts.livechat.com/ooops). Bu yüzden query'siz adresi veriyoruz.
 function redirectUri() {
   if (CFG.REDIRECT) return CFG.REDIRECT;
+  // LiveChat widget iframe'ini query parametreleriyle açar; redirect_uri'de
+  // query yasak olduğu için sadece origin + pathname kullanıyoruz.
   return window.location.origin + window.location.pathname;
 }
 function accounts() {
@@ -175,13 +228,11 @@ function accounts() {
     client_id: CFG.CLIENT_ID,
     redirect_uri: redirectUri(),
     response_type: 'token',
-    // widget bir iframe içinde çalıştığı için çerez yerine localStorage:
     transaction: { force_local_storage: true }
   };
   if (CFG.SCOPES) opts.scope = CFG.SCOPES;
   return new AccountsSDK(opts);
 }
-// Sessiz (iframe) deneme — başarısız olursa null döner, kullanıcıya buton gösterilir.
 function authSilent() {
   var c = cachedToken();
   if (c) { token = c; return Promise.resolve(token); }
@@ -189,16 +240,10 @@ function authSilent() {
     .then(function (d) { return (d && d.access_token) ? storeToken(d) : null; })
     .catch(function () { return null; });
 }
-// Kullanıcı tıklamasıyla popup — tarayıcı popup'ı engellemesin diye click içinde çağrılmalı.
 function authPopup() {
   return accounts().popup().authorize()
     .then(function (d) { return (d && d.access_token) ? storeToken(d) : null; });
 }
-// Agent kimliği. /v2/info yalnızca account_id (UUID) döndürebilir; UUID'yi asla etiket
-// olarak göstermiyoruz. Gerçek isim için list_agents deneniyor: 'agents--all:ro' scope'u
-// verilmişse isim gelir, verilmemişse sessizce 'Agent' yazar.
-function looksLikeEmail(v) { return typeof v === 'string' && v.indexOf('@') > -1; }
-
 function whoAmI() {
   if (me !== null) return Promise.resolve(me);
   me = '';
@@ -239,7 +284,7 @@ function api(action, payload, group) {
   });
 }
 
-/* ---------- notlar ---------- */
+/* ---------- not verisi ---------- */
 function parseNotes(holder) {
   var bag = holder && holder.properties && holder.properties[CFG.CLIENT_ID];
   var raw = bag && bag[CFG.PROPERTY];
@@ -247,11 +292,27 @@ function parseNotes(holder) {
   try {
     var v = JSON.parse(raw);
     if (Array.isArray(v)) return v;
-    if (typeof v === 'string' && v) return [{ t: 0, a: '', x: v }];   // eski tek-metin formatı
+    if (typeof v === 'string' && v) return [{ t: 0, a: '', x: v }];
   } catch (e) {
-    return [{ t: 0, a: '', x: String(raw) }];                        // düz metin de kaybolmasın
+    return [{ t: 0, a: '', x: String(raw) }];
   }
   return [];
+}
+// Eski notlarda id yok; içerikten türeyen sabit bir id veriyoruz ki
+// iki agent aynı notu aynı id ile görsün.
+function normalize(list) {
+  return (list || []).map(function (n, i) {
+    if (!n || typeof n !== 'object') return { i: 'l' + i, t: 0, a: '', x: String(n || '') };
+    if (!n.i) n.i = 'l' + (n.t || 0) + '-' + i;
+    return n;
+  });
+}
+function byId(list, id) {
+  for (var i = 0; i < list.length; i++) if (list[i].i === id) return i;
+  return -1;
+}
+function liveNotes() {
+  return notes.filter(function (n) { return !n.v; });
 }
 
 function loadChat(chatId, threadHint, email, custId) {
@@ -263,17 +324,13 @@ function loadChat(chatId, threadHint, email, custId) {
       chatId: chat.id || chatId, threadId: thread.id || threadHint,
       email: email || '', custId: custId || ''
     };
-    // Notlar sohbet (chat) seviyesinde tutulur -> müşteri tekrar geldiğinde de görünür.
-    notes = parseNotes(chat);
-    // Eski sürümde thread'e yazılmış notlar varsa onları da al (ilk kayıtta chat'e taşınır).
-    if (!notes.length) notes = parseNotes(thread);
+    var found = parseNotes(chat);
+    if (!found.length) found = parseNotes(thread);   // eski thread kayıtları
+    notes = normalize(found);
     if (!ctx.threadId) throw new Error('Bu sohbette kayıt yapılabilir bir thread bulunamadı.');
   });
 }
 
-// Bir arşiv kaydının GERÇEKTEN aynı müşteriye ait olduğunu doğrula.
-// (list_archives'ın customer_email filtresine güvenmiyoruz; sunucu yok sayarsa
-// başka müşterilerin notları görünürdü.)
 function sameCustomer(chat) {
   var users = (chat && chat.users) || [];
   for (var i = 0; i < users.length; i++) {
@@ -284,45 +341,177 @@ function sameCustomer(chat) {
   }
   return false;
 }
-
-// AYNI müşterinin diğer sohbetlerindeki notlar — salt okunur. CFG.HISTORY ile açılır.
 function loadHistory() {
   pastNotes = [];
   if (!CFG.HISTORY || (!ctx.email && !ctx.custId)) return Promise.resolve();
   var filters = {};
   if (ctx.custId) filters.customer_id = ctx.custId;
   else filters.customer_email = ctx.email;
-  return api('list_archives', {
-    filters: filters, limit: 25, sort_order: 'desc'
-  }).then(function (res) {
+  return api('list_archives', { filters: filters, limit: 25, sort_order: 'desc' }).then(function (res) {
     var seen = {};
     (res.chats || []).forEach(function (c) {
       if (!c || !c.id || c.id === ctx.chatId || seen[c.id]) return;
-      if (!sameCustomer(c)) return;   // <-- yanlış müşterinin notu asla gelmez
+      if (!sameCustomer(c)) return;
       seen[c.id] = 1;
       var found = parseNotes(c);
       if (!found.length && c.thread) found = parseNotes(c.thread);
-      found.forEach(function (n) { pastNotes.push({ chat: c.id, n: n }); });
+      normalize(found).forEach(function (n) { pastNotes.push({ chat: c.id, n: n }); });
     });
     pastNotes.sort(function (a, b) { return (b.n.t || 0) - (a.n.t || 0); });
   }).catch(function () { pastNotes = []; });
 }
 
-function persist() {
-  var props = {};
-  props[CFG.CLIENT_ID] = {};
-  props[CFG.CLIENT_ID][CFG.PROPERTY] = JSON.stringify(notes);
-  return api('update_chat_properties', {
-    id: ctx.chatId, properties: props
-  }).then(function () {
-    if (!CFG.TAG) return;
-    var action = notes.length ? 'tag_thread' : 'untag_thread';
-    return api(action, { chat_id: ctx.chatId, thread_id: ctx.threadId, tag: CFG.TAG })
-      .catch(function () { /* etiket başarısız olsa da not kaydedildi */ });
+/* ---------- yazma: çakışma korumalı ---------- *
+ * Kaydetmeden hemen önce sohbeti yeniden okuyup listeyi sunucudaki son
+ * haline uygularız. Böylece bu arada başka bir agent not eklediyse onun
+ * notu kaybolmaz.                                                       */
+function commit(op) {
+  if (busy || !ctx) return Promise.resolve();
+  busy = true; banner(''); syncComposer();
+  return api('get_chat', { chat_id: ctx.chatId, thread_id: ctx.threadId })
+    .then(function (chat) {
+      var current = parseNotes(chat);
+      if (!current.length) current = parseNotes(chat.thread || {});
+      var next = op(normalize(current));
+      var props = {}; props[CFG.CLIENT_ID] = {};
+      props[CFG.CLIENT_ID][CFG.PROPERTY] = JSON.stringify(next);
+      return api('update_chat_properties', { id: ctx.chatId, properties: props })
+        .then(function () { notes = next; });
+    })
+    .then(function () {
+      if (!CFG.TAG) return null;
+      var action = liveNotes().length ? 'tag_thread' : 'untag_thread';
+      return api(action, { chat_id: ctx.chatId, thread_id: ctx.threadId, tag: CFG.TAG })
+        .catch(function () { return null; });   // etiket yoksa/izin yoksa not yine kaydedildi
+    })
+    .then(function () { busy = false; render(); })
+    .catch(function (err) {
+      busy = false; render();
+      if (err && err.auth) { show('auth'); return; }
+      banner('Kaydedilemedi: ' + (err && err.message ? err.message : 'bilinmeyen hata'));
+    });
+}
+
+function addNote(text) {
+  return commit(function (list) {
+    list.unshift({ i: nid(), t: Date.now(), a: me || '', x: text });
+    return list;
+  });
+}
+function editNote(id, text) {
+  return commit(function (list) {
+    var k = byId(list, id);
+    if (k < 0) { list.unshift({ i: nid(), t: Date.now(), a: me || '', x: text }); return list; }
+    list[k].x = text;
+    list[k].e = Date.now();
+    return list;
+  });
+}
+function deleteNote(id) {
+  return commit(function (list) {
+    var k = byId(list, id);
+    if (k > -1) list.splice(k, 1);
+    return list;
+  });
+}
+function voidNote(id, undo) {
+  return commit(function (list) {
+    var k = byId(list, id);
+    if (k < 0) return list;
+    if (undo) delete list[k].v;
+    else list[k].v = { a: me || '', t: Date.now() };
+    return list;
   });
 }
 
+/* ---------- Agent App görünürlüğü ---------- */
+function updateSection() {
+  if (!widget || !CFG.SECTION || typeof widget.modifySection !== 'function') return;
+  var live = liveNotes();
+  var comps = [];
+  if (live.length) {
+    comps.push({ type: 'label_value', data: {
+      label: (live[0].a || 'Agent'),
+      value: trim(live[0].x, 90)
+    }});
+  } else {
+    comps.push({ type: 'label_value', data: { label: 'Not yok', value: '' } });
+  }
+  comps.push({ type: 'button', data: {
+    label: live.length ? 'Notları aç' : 'Not ekle',
+    id: 'open-notes', openApp: true, primary: true
+  }});
+  try {
+    widget.modifySection({
+      title: live.length ? ('Notlar (' + live.length + ')') : 'Notlar',
+      components: comps
+    });
+  } catch (e) {}
+}
+function maybeToast() {
+  if (!CFG.TOAST || !widget || typeof widget.setToast !== 'function') return;
+  var n = liveNotes().length;
+  if (!n || !ctx || toastedChat === ctx.chatId) return;
+  toastedChat = ctx.chatId;
+  try {
+    widget.setToast({ content: 'Bu müşteri için ' + n + ' not var', kind: 'success' });
+  } catch (e) {}
+}
+
 /* ---------- arayüz ---------- */
+function noteCard(n, readOnly) {
+  var card = document.createElement('div');
+  card.className = 'note' + (n.v ? ' void' : '') + (readOnly ? ' old' : '');
+
+  var meta = document.createElement('div');
+  meta.className = 'meta';
+
+  var who = document.createElement('span');
+  who.className = 'who';
+  who.textContent = [n.a || 'Agent', n.t ? fmt(n.t) : '', n.e ? '(düzenlendi)' : '']
+    .filter(Boolean).join(' · ');
+  meta.appendChild(who);
+
+  if (!readOnly) {
+    var acts = document.createElement('span');
+    acts.className = 'acts';
+    var mine = !!(me && n.a === me);
+
+    if (mine && !n.v) {
+      acts.appendChild(mkBtn('Düzenle', 'iconbtn', function () { startEdit(n.i); }));
+    }
+    if (n.v) {
+      acts.appendChild(mkBtn('Geri al', 'iconbtn', function () { voidNote(n.i, true); }));
+    } else {
+      acts.appendChild(mkBtn('Geçersiz kıl', 'iconbtn', function () { voidNote(n.i, false); }));
+    }
+    if (mine) {
+      acts.appendChild(mkBtn('Sil', 'iconbtn danger', function () { deleteNote(n.i); }));
+    }
+    meta.appendChild(acts);
+  }
+  card.appendChild(meta);
+
+  var txt = document.createElement('div');
+  txt.className = 'txt';
+  txt.textContent = n.x || '';
+  card.appendChild(txt);
+
+  if (n.v) {
+    var v = document.createElement('div');
+    v.className = 'voidnote';
+    v.textContent = (n.v.a || 'Bir agent') + ' geçersiz kıldı' + (n.v.t ? ' · ' + fmt(n.v.t) : '');
+    card.appendChild(v);
+  }
+  return card;
+}
+function mkBtn(label, cls, fn) {
+  var b = document.createElement('button');
+  b.type = 'button'; b.className = cls; b.textContent = label;
+  b.onclick = fn;
+  return b;
+}
+
 function render() {
   var box = $('notes');
   box.textContent = '';
@@ -332,43 +521,7 @@ function render() {
     e.textContent = 'Bu sohbet için henüz not yok.';
     box.appendChild(e);
   }
-  notes.forEach(function (n, i) {
-    var card = document.createElement('div');
-    card.className = 'note';
-
-    var meta = document.createElement('div');
-    meta.className = 'meta';
-
-    var who = document.createElement('span');
-    who.className = 'who';
-    who.textContent = [n.a || 'Agent', n.t ? fmt(n.t) : ''].filter(Boolean).join(' · ');
-    meta.appendChild(who);
-
-    var acts = document.createElement('span');
-    acts.className = 'acts';
-
-    var edit = document.createElement('button');
-    edit.className = 'iconbtn'; edit.type = 'button';
-    edit.textContent = 'Düzenle'; edit.title = 'Notu düzenle';
-    edit.onclick = function () { startEdit(i); };
-    acts.appendChild(edit);
-
-    var del = document.createElement('button');
-    del.className = 'iconbtn danger'; del.type = 'button';
-    del.textContent = 'Sil'; del.title = 'Notu sil';
-    del.onclick = function () { removeNote(i); };
-    acts.appendChild(del);
-
-    meta.appendChild(acts);
-    card.appendChild(meta);
-
-    var txt = document.createElement('div');
-    txt.className = 'txt';
-    txt.textContent = n.x || '';
-    card.appendChild(txt);
-
-    box.appendChild(card);
-  });
+  notes.forEach(function (n) { box.appendChild(noteCard(n, false)); });
 
   if (pastNotes.length) {
     var h = document.createElement('div');
@@ -377,86 +530,46 @@ function render() {
     title.className = 'hist-title small muted';
     title.textContent = 'Aynı müşterinin diğer sohbetleri (' + pastNotes.length + ')';
     h.appendChild(title);
-    pastNotes.forEach(function (item) {
-      var c = document.createElement('div');
-      c.className = 'note old';
-      var m = document.createElement('div');
-      m.className = 'who';
-      m.textContent = [item.n.a || 'Agent', item.n.t ? fmt(item.n.t) : '', item.chat].filter(Boolean).join(' · ');
-      c.appendChild(m);
-      var t = document.createElement('div');
-      t.className = 'txt';
-      t.textContent = item.n.x || '';
-      c.appendChild(t);
-      h.appendChild(c);
-    });
+    pastNotes.forEach(function (item) { h.appendChild(noteCard(item.n, true)); });
     box.appendChild(h);
   }
   syncComposer();
+  updateSection();
 }
 
 function syncComposer() {
   var len = $('input').value.length;
   $('counter').textContent = len ? (len + ' / ' + CFG.MAX_NOTE) : '';
-  $('save').textContent = editing > -1 ? 'Güncelle' : 'Ekle';
+  $('save').textContent = editing ? 'Güncelle' : 'Ekle';
   $('save').disabled = busy || !$('input').value.trim();
-  $('cancel').hidden = editing < 0;
+  $('cancel').hidden = !editing;
   $('input').disabled = busy;
 }
-
-function startEdit(i) {
-  editing = i;
-  $('input').value = notes[i].x || '';
+function startEdit(id) {
+  var k = byId(notes, id);
+  if (k < 0) return;
+  editing = id;
+  $('input').value = notes[k].x || '';
   $('input').focus();
   syncComposer();
 }
 function cancelEdit() {
-  editing = -1;
+  editing = null;
   $('input').value = '';
   syncComposer();
 }
-
-function withSave(mutate) {
-  var snapshot = JSON.stringify(notes);
-  mutate();
-  busy = true; banner(''); syncComposer();
-  return persist()
-    .then(function () { busy = false; render(); })
-    .catch(function (err) {
-      notes = JSON.parse(snapshot);
-      busy = false; render();
-      if (err && err.auth) { show('auth'); return; }
-      banner('Kaydedilemedi: ' + (err && err.message ? err.message : 'bilinmeyen hata'));
-    });
-}
-
 function submit() {
   var text = $('input').value.trim();
   if (!text || busy) return;
-  var idx = editing;
-  return withSave(function () {
-    if (idx > -1) {
-      notes[idx] = { t: Date.now(), a: notes[idx].a || me || '', x: text };
-    } else {
-      notes.unshift({ t: Date.now(), a: me || '', x: text });
-    }
-    editing = -1;
-    $('input').value = '';
-  });
-}
-
-function removeNote(i) {
-  if (busy) return;
-  return withSave(function () {
-    notes.splice(i, 1);
-    if (editing === i) { editing = -1; $('input').value = ''; }
-  });
+  var id = editing;
+  editing = null;
+  $('input').value = '';
+  return id ? editNote(id, text) : addNote(text);
 }
 
 /* ---------- açılış ---------- */
 function openProfile(profile) {
   var chat = (profile && profile.chat) || {};
-  // Agent App bazı sürümlerde chat_id + id (thread) verir, bazılarında sadece id (chat).
   var chatId = chat.chat_id || chat.id;
   var threadHint = chat.chat_id ? chat.id : null;
 
@@ -468,7 +581,10 @@ function openProfile(profile) {
     .then(function () {
       return loadChat(chatId, threadHint, profile && profile.email, profile && profile.id);
     })
-    .then(function () { editing = -1; $('input').value = ''; show('main'); banner(''); render(); })
+    .then(function () {
+      editing = null; $('input').value = '';
+      show('main'); banner(''); render(); maybeToast();
+    })
     .then(function () { return loadHistory().then(render); })
     .catch(function (err) {
       if (err && err.auth) { show('auth'); return; }
@@ -477,8 +593,7 @@ function openProfile(profile) {
 }
 
 function boot() {
-  // Popup akışında bu sayfa token'la birlikte kısa süre popup içinde açılır;
-  // orada arayüz kurmaya çalışmayalım, ana pencere token'ı alıp popup'ı kapatacak.
+  // Popup akışında bu sayfa token'la birlikte kısa süre popup içinde açılır.
   if (window.opener && window.location.hash.indexOf('access_token') > -1) {
     setState('Bağlantı tamamlandı, bu pencere kapanacak…');
     return;
@@ -487,13 +602,8 @@ function boot() {
     setState('Bu sayfa LiveChat Agent App içinde çalışacak şekilde tasarlandı.', true);
     return;
   }
-  // Not: burada sabit bir şablon metniyle karşılaştırma YAPMIYORUZ. Client ID'yi
-  // dosyada "hepsini değiştir" ile doldurmak, o şablon metnini de değiştirip
-  // kontrolü tersine çevirebiliyor. Bunun yerine biçim doğruluyoruz (32 hane hex).
-  if (!/^[0-9a-f]{32}$/i.test(String(CFG.CLIENT_ID || ''))) {
-    setState('Kurulum eksik: index.html içindeki CLIENT_ID alanını doldur.', true);
-    return;
-  }
+  var problem = pickBrand();
+  if (problem) { setState('Kurulum eksik: ' + problem, true); return; }
 
   $('input').addEventListener('input', syncComposer);
   $('input').addEventListener('keydown', function (e) {
@@ -502,8 +612,8 @@ function boot() {
   $('save').addEventListener('click', submit);
   $('cancel').addEventListener('click', cancelEdit);
 
-  window.LiveChat.createDetailsWidget().then(function (widget) {
-    // LiveChat temasını takip et
+  window.LiveChat.createDetailsWidget().then(function (w) {
+    widget = w;
     var applyTheme = function (t) { if (t) document.documentElement.setAttribute('data-theme', t); };
     try { applyTheme(widget.getTheme && widget.getTheme()); } catch (e) {}
     widget.on('change_theme', function (d) { applyTheme(d && d.theme); });
@@ -513,8 +623,7 @@ function boot() {
       authPopup()
         .then(function (t) {
           if (!t) { show('auth'); return; }
-          var p = widget.getCustomerProfile && widget.getCustomerProfile();
-          openProfile(p);
+          openProfile(widget.getCustomerProfile && widget.getCustomerProfile());
         })
         .catch(function () { show('auth'); });
     });
