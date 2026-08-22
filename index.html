@@ -144,6 +144,10 @@ var notes = [];          // birleşik liste; her notta _c = bulunduğu sohbet
 var editing = null;      // düzenlenen not nesnesi
 var busy = false;
 var toastedChat = null;
+// Sohbet geçişlerinde customer_profile birden fazla kez tetiklenebiliyor. Her
+// yüklemeye bir nesil numarası veriyoruz; geç dönen eski yüklemenin sonucu atılır,
+// yoksa aynı notlar listeye iki kez eklenir.
+var gen = 0;
 var TOKEN_KEY = '';
 
 /* ---------- yardımcılar ---------- */
@@ -311,6 +315,15 @@ function byId(list, id) {
   return -1;
 }
 function liveNotes() { return notes.filter(function (n) { return !n.v; }); }
+function dedupe(list) {
+  var seen = {}, out = [];
+  (list || []).forEach(function (n) {
+    var k = (n._c || '') + '|' + n.i;
+    if (seen[k]) return;
+    seen[k] = 1; out.push(n);
+  });
+  return out;
+}
 function sortNotes(list) {
   list.sort(function (a, b) { return (b.t || 0) - (a.t || 0); });
   return list;
@@ -427,9 +440,10 @@ function commitTo(chatId, op) {
       var props = {}; props[CFG.CLIENT_ID] = bag;
       return api('update_chat_properties', { id: chatId, properties: props })
         .then(function () {
-          notes = notes.filter(function (n) { return n._c !== chatId; })
-                       .concat(normalize(next, chatId));
-          sortNotes(notes);
+          notes = sortNotes(dedupe(
+            notes.filter(function (n) { return n._c !== chatId; })
+                 .concat(normalize(next, chatId))
+          ));
         });
     })
     .then(function () {
@@ -597,21 +611,27 @@ function openProfile(profile) {
   if (!chatId) { setState('Bu görünümde bağlı bir sohbet yok.'); return; }
   if (!token) { show('auth'); return; }
 
+  var myGen = ++gen;
+  var stale = function () { return myGen !== gen; };
+
   setState('Notlar yükleniyor…');
   whoAmI()
-    .then(function () { return loadChat(chatId, threadHint, profile); })
+    .then(function () { if (stale()) return null; return loadChat(chatId, threadHint, profile); })
     .then(function () {
+      if (stale()) return null;
       editing = null; $('input').value = '';
+      notes = dedupe(notes);
       show('main'); banner(''); render();
-    })
-    .then(function () {
       // oyuncunun diğer sohbetlerindeki notlar aynı listeye karışır
       return loadPlayerNotes().then(function (extra) {
-        if (extra.length) { notes = sortNotes(notes.concat(extra)); render(); }
+        if (stale()) return null;
+        if (extra.length) { notes = sortNotes(dedupe(notes.concat(extra))); render(); }
         maybeToast();
+        return null;
       });
     })
     .catch(function (err) {
+      if (stale()) return;
       if (err && err.auth) { show('auth'); return; }
       setState('Notlar açılamadı: ' + (err && err.message ? err.message : 'bilinmeyen hata'), true);
     });
