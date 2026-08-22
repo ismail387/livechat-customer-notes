@@ -130,6 +130,10 @@ var CFG = {
   MAX_NOTE:  2000,
   HISTORY:   false,                // aynı müşterinin diğer sohbetlerindeki notlar
   SECTION:   true,                 // müşteri bilgileri görünümüne özet blok
+  // Bölüm başlığı Console'daki "Initial state" alanındaki title ile BİREBİR aynı
+  // olmalı; LiveChat bu başlığı bölümün kimliği olarak kullanıyor, bu yüzden
+  // çalışma anında değiştirilemez (not sayısı başlığa yazılamaz).
+  SECTION_TITLE: 'Notlar',
   TOAST:     true                  // notu olan sohbet açılınca bildirim
 };
 
@@ -430,22 +434,21 @@ function updateSection() {
   var live = liveNotes();
   var comps = [];
   if (live.length) {
+    var last = live[0];
     comps.push({ type: 'label_value', data: {
-      label: (live[0].a || 'Agent'),
-      value: trim(live[0].x, 90)
+      label: live.length + (live.length > 1 ? ' not' : ' not') + ' · ' + (last.a || 'Agent'),
+      value: trim(last.x, 90)
     }});
   } else {
-    comps.push({ type: 'label_value', data: { label: 'Not yok', value: '' } });
+    comps.push({ type: 'label_value', data: { label: 'Not yok', value: '—' } });
   }
   comps.push({ type: 'button', data: {
     label: live.length ? 'Notları aç' : 'Not ekle',
     id: 'open-notes', openApp: true, primary: true
   }});
   try {
-    widget.modifySection({
-      title: live.length ? ('Notlar (' + live.length + ')') : 'Notlar',
-      components: comps
-    });
+    // title sabit: bölümün kimliği. Değiştirilirse çağrı hiçbir bölüme denk gelmez.
+    widget.modifySection({ title: CFG.SECTION_TITLE, components: comps });
   } catch (e) {}
 }
 function maybeToast() {
